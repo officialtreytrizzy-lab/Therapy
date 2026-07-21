@@ -1,0 +1,11 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "public",
+  "cleanUrls": true,
+  "rewrites": [
+    { "source": "/api/healthz", "destination": "/api/healthz.js" },
+    { "source": "/api/firebase-config", "destination": "/api/firebase-config.js" },
+    { "source": "/(.*)", "destination": "/" }
+  ]
+}
