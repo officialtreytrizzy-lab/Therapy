@@ -28,3 +28,15 @@ npm run build
 ## Production
 
 The app runs on Vercel, uses Firebase Authentication and Firestore, and invokes Gemini through Vertex AI with Vercel OIDC workload identity. No permanent Google service-account key is committed or stored in the client.
+
+## Public-beta launch hardening
+
+This branch adds the first reviewable implementation of the public-beta hardening program. Start with the audit and traceability matrix:
+
+- `docs/audits/public-beta-launch-hardening-audit.md`
+- `docs/public-beta-implementation-matrix.md`
+- `docs/legal-privacy-safety.md`
+- `docs/runbooks/incident-response.md`
+- `docs/runbooks/rollback.md`
+
+Production deployment still requires provider setup, Firebase App Check enforcement configuration, email notification provider configuration, security-rule emulator review, accessibility/browser verification, and external legal/privacy/clinical review.

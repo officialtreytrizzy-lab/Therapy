@@ -1,0 +1,3 @@
+# Live-session reliability and governance
+
+Sessions use checkpointed, idempotent server writes keyed by session/member/client operation IDs. Meaningful modules are: intake, readiness, facts, perspective-a, perspective-b, cycle, accountability, repair, follow-up, completion. Presence states are online, backgrounded, reconnecting, stale, left, refused, and ended. Duplicate tabs must share one active writer lease per member. Owner departure does not delete shared history. Extension beyond the configured duration requires mutual consent. Unsafe private flags convert joint exercises to separate safety guidance without exposing the flag text to the partner.
