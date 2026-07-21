@@ -110,21 +110,47 @@ function parseJson(text) {
   }
   throw httpError(502, 'The Guide returned an invalid structured response.', 'invalid-guide-response');
 }
-export async function gemini(system, prompt, maxOutputTokens = 1800) {
-  const token = await accessToken();
-  const url = `https://aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${MODEL}:generateContent`;
+async function generateVertexJson(token, url, system, prompt, maxOutputTokens, temperature = 0.35) {
   const response = await fetch(url, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.35, maxOutputTokens, responseMimeType: 'application/json' },
+      generationConfig: { temperature, maxOutputTokens, responseMimeType: 'application/json' },
     }),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw httpError(502, payload?.error?.message || 'The Guide is temporarily unavailable.', 'vertex-error');
-  return parseJson(payload?.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('') || '');
+  return {
+    text: payload?.candidates?.[0]?.content?.parts?.map(part => part.text || '').join('') || '',
+    finishReason: payload?.candidates?.[0]?.finishReason || 'UNKNOWN',
+  };
+}
+
+export async function gemini(system, prompt, maxOutputTokens = 1800) {
+  const token = await accessToken();
+  const url = `https://aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${MODEL}:generateContent`;
+  const primary = await generateVertexJson(token, url, system, prompt, maxOutputTokens);
+  try {
+    return parseJson(primary.text);
+  } catch (error) {
+    if (error.code !== 'invalid-guide-response' || !primary.text.trim()) throw error;
+    const repaired = await generateVertexJson(
+      token,
+      url,
+      'You are a strict JSON repair utility. Return one valid JSON value only. Preserve the supplied meaning and field names. Do not add commentary, markdown, or explanations.',
+      `Convert the following model output into valid JSON. Preserve all available fields and meaning. If a field is incomplete, use a safe empty string, null, or empty array rather than inventing facts.\n\nMODEL OUTPUT:\n${primary.text}`,
+      Math.max(1800, maxOutputTokens),
+      0.05,
+    );
+    try {
+      return parseJson(repaired.text);
+    } catch {
+      console.error('Guide structured-output repair failed:', { primaryFinishReason: primary.finishReason, repairFinishReason: repaired.finishReason, primaryLength: primary.text.length, repairLength: repaired.text.length });
+      throw httpError(502, 'The Guide returned an invalid structured response.', 'invalid-guide-response');
+    }
+  }
 }
 export function runWithGoogle(req, callback) {
   const oidcToken = req.headers['x-vercel-oidc-token'] || process.env.VERCEL_OIDC_TOKEN;
