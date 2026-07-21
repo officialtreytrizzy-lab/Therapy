@@ -1,0 +1,9 @@
+.vercel
+node_modules
+.env*
+.firebase-admin-key.json
+firebase-debug.log
+firebase-console.png
+firestore-list.*
+identitytoolkit-v1-discovery.json
+auth-config-current.json

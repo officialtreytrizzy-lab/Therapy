@@ -6,6 +6,7 @@
   "rewrites": [
     { "source": "/api/healthz", "destination": "/api/healthz.js" },
     { "source": "/api/firebase-config", "destination": "/api/firebase-config.js" },
+    { "source": "/api/firebase-account", "destination": "/api/firebase-account.js" },
     { "source": "/(.*)", "destination": "/" }
   ]
 }

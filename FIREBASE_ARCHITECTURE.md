@@ -1,12 +1,24 @@
-# US, FOR REAL — Firebase Identity, Couple Linking, and Guide Dossier
+﻿# US, FOR REAL — Firebase Identity, Couple Linking, and Guide Dossier
+
+## Production services
+
+- Firebase project: `us-for-real-therapy`
+- Firebase Authentication: passwordless email-link sign-in
+- Cloud Firestore: account, couple, progress, and dossier records
+- Vercel project: `couple-wellness`
+- Production URL: `https://couple-wellness.vercel.app`
+- Trusted server operations: Vercel Function `/api/firebase-account`
+- Google authorization: Vercel OIDC workload-identity federation; no service-account private key is stored
+
+The Firebase project remains on the Spark plan. Billing-dependent Firebase Cloud Functions are not required for the account and relationship system.
 
 ## Account model
 
-Every Firebase Authentication account receives a permanent random 8-digit `memberCode`. This is the public number used for partner linking; it is separate from the Firebase UID and does not expose the user's email.
+Every Firebase Authentication account receives a permanent random 8-digit `memberCode`. This is the public number used for partner linking. It is separate from the Firebase UID and does not expose the member's email.
 
-A new account starts in `relationshipStatus: "solo"`. The member can stay solo indefinitely or enter another member's exact code. The receiving member must accept the request before the profiles become a couple.
+A new account starts with `relationshipStatus: "solo"`. A member can stay solo indefinitely or enter another member's exact 8-digit code. The receiving member must accept the request before the profiles become a couple.
 
-The acceptance operation runs inside a trusted Cloud Function transaction. It verifies that both accounts exist, neither is already linked, and the member is not linking to himself. It then creates one couple document, two membership documents, and updates both user profiles atomically.
+The acceptance operation runs inside a trusted Firestore transaction. It verifies that both accounts exist, neither account is already linked, and a member is not linking to himself. It then creates one couple document, two membership documents, updates both profiles, and closes the invite atomically.
 
 ## Main Firestore paths
 
@@ -26,54 +38,83 @@ couples/{coupleId}/timeline/{eventId}
 couples/{coupleId}/guide/dossier
 ```
 
+The `memberDirectory` collection is server-only. Firestore rules prevent clients from searching it or resolving a code to a Firebase UID.
+
 ## Living Couple Guide Dossier
 
-`couples/{coupleId}/guide/dossier` stores both:
+`couples/{coupleId}/guide/dossier` stores:
 
-- `structured`: normalized JSON for programmatic context selection.
+- `structured`: normalized JSON for context selection and programmatic checks.
 - `markdown`: a readable living couple formulation for the Guide prompt.
 
-It is regenerated when the couple profile, members, sessions, goals, agreements, or shared memories change. It covers identity, anniversary, how the couple met, first date, first impressions, shared memories, strengths, values, rituals, hopes, active priorities, agreements, goals, and recent session evidence.
+The dossier covers:
 
-The Guide must treat the dossier as revisable context rather than unquestionable truth. Current direct statements override stale notes. Inferences must be labeled and checked. Private reflections are stored under the individual user and must never be copied into the shared dossier without explicit consent.
+- member names and anniversary
+- where and how the couple met
+- first date and first impressions
+- favorite memories
+- strengths, shared values, rituals, and hopes
+- current relationship priorities
+- active goals and agreements
+- recent shared memories
+- recent session summaries, progress signals, and concerns
 
-## AI context order
+The browser client watches the app's relationship state. When shared sessions, goals, agreements, or shared memories change, it sends a bounded, sanitized snapshot to the trusted Vercel endpoint. The endpoint replaces the corresponding couple subcollections and immediately regenerates the dossier. Private coaching sessions and private memories are excluded from this shared sync.
 
-Before responding, load:
+## Guide context rules
 
-1. Current session module, active speaker, and recent turns
+Before generating a relationship response, the Guide should load context in this order:
+
+1. Current lesson module, active speaker, and recent direct turns
 2. Safety state and whether joint facilitation is appropriate
-3. Current user's profile and consented private context
-4. The couple Guide dossier
-5. Relevant active goals, agreements, and shared memories
-6. The latest session summary and unfinished exercise
+3. Current user's personal intake and explicitly consented private context
+4. The living Couple Guide Dossier
+5. Relevant active goals, agreements, shared memories, and recent session evidence
+6. The unfinished exercise or agreed next step
 
-Use this context to personalize questions, examples, exercises, follow-up, and progress tracking. Never diagnose either person, reveal private material, or present an old interpretation as a settled fact.
+The Guide must:
 
-## Firebase services
+- treat the dossier as revisable evidence, not unquestionable truth
+- let current direct statements override stale notes
+- label and verify inferences
+- never reveal one partner's private reflection to the other
+- avoid diagnosis and mind-reading
+- preserve equal dignity without forcing equal responsibility
+- use progress and setback history without shaming either partner
 
-- Firebase Authentication: passwordless email link and Google sign-in
-- Cloud Firestore: account, relationship, session, and dossier data
-- Cloud Functions: member-code allocation, secure linking, intake updates, and dossier regeneration
-- App Check: supported and recommended before public launch
-- Emulator Suite: local Auth, Firestore, Functions, and Rules testing
+## Trusted server actions
 
-## Activation
+`POST /api/firebase-account` accepts a verified Firebase ID token and one of these actions:
 
-1. Create a dedicated Firebase project for Couple Wellness.
-2. Register a Web App.
-3. Enable Google sign-in and Email link sign-in.
-4. Create Cloud Firestore in production mode.
-5. Deploy `firestore.rules`, `firestore.indexes.json`, and `functions/` with the Firebase CLI.
-6. Add these Vercel environment variables:
-   - `FIREBASE_API_KEY`
-   - `FIREBASE_AUTH_DOMAIN`
-   - `FIREBASE_PROJECT_ID`
-   - `FIREBASE_STORAGE_BUCKET`
-   - `FIREBASE_MESSAGING_SENDER_ID`
-   - `FIREBASE_APP_ID`
-   - `FIREBASE_MEASUREMENT_ID` (optional)
-   - `FIREBASE_FUNCTIONS_REGION=us-central1`
-   - `FIREBASE_APP_CHECK_SITE_KEY` (recommended)
-7. Redeploy Vercel.
-8. Enable Function App Check enforcement with `ENFORCE_APP_CHECK=true` after App Check is configured.
+- `provisionProfile`
+- `requestPartnerLink`
+- `listPendingInvites`
+- `respondToPartnerInvite`
+- `savePersonalIntake`
+- `saveCoupleIntake`
+- `syncRelationshipState`
+- `getGuideContext`
+
+Firebase ID tokens are verified with Google's rotating Secure Token certificates using Node's built-in RSA verifier. Firestore server access uses short-lived Google credentials exchanged from Vercel's signed OIDC token.
+
+## Security boundaries
+
+- No Firebase Admin private key is committed or stored in Vercel.
+- Google workload identity is restricted to the exact Vercel production principal:
+  `owner:v-ideo-e-dit:project:couple-wellness:environment:production`
+- Only the two linked UIDs can read a couple's shared data.
+- Private memories remain owner-only.
+- Partner-link requests require explicit acceptance.
+- Public web configuration contains only Firebase's normal browser-safe identifiers.
+- Firestore rules and indexes are deployed from `firestore.rules` and `firestore.indexes.json`.
+
+## Local verification
+
+```bash
+npm install
+npm run check
+npx firebase-tools deploy --only firestore:rules,firestore:indexes --project us-for-real-therapy
+vercel --prod
+```
+
+The production end-to-end test verified two real temporary Firebase users, permanent member IDs, invite delivery, acceptance, atomic couple creation, intake storage, relationship-state synchronization, and dossier retrieval. Temporary Auth and Firestore records were deleted after the test.
