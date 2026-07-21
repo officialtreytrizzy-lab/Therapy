@@ -1,0 +1,2 @@
+US, FOR REAL premium iOS session release 1.0.5
+Includes compact Safari layout, safe-area navigation, lesson modules, partner handoff, guided reflection, live practice timer, repair planning, and debrief summaries.
