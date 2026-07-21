@@ -2,9 +2,11 @@ import { ExternalAccountClient } from 'google-auth-library';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { verify as verifySignature } from 'node:crypto';
 import { FieldValue, Firestore, Timestamp } from '@google-cloud/firestore';
+import { audit, correlationId, enforceRateLimit, redactedLog } from './security.js';
 
 const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'us-for-real-therapy';
 const INVITE_TTL_DAYS = 7;
+const DELETE_GRACE_DAYS = 7;
 const FIREBASE_CERTS_URL = 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
 let firebaseCertCache = { certificates: null, expiresAt: 0 };
 
@@ -169,6 +171,7 @@ async function provisionProfile(uid, token, data) {
 }
 
 async function requestPartnerLink(uid, data) {
+  await enforceRateLimit(getDb(), `invite:user:${uid}`, 5, 3600);
   const partnerCode = clean(data.partnerCode, 8);
   if (!/^\d{8}$/.test(partnerCode)) throw httpError(400, 'Enter the other member’s 8-digit ID.', 'invalid-member-id');
   const fromRef = getDb().doc(`users/${uid}`);
@@ -650,6 +653,7 @@ async function writeInteractionLedger(coupleRef, event) {
 }
 
 async function createLiveSession(uid, data) {
+  await enforceRateLimit(getDb(), `session:user:${uid}`, 12, 86400);
   const { coupleId, coupleRef, couple } = await requireCouple(uid);
   const topic = clean(data.topic, 500);
   const scenario = clean(data.scenario, 3000);
@@ -784,6 +788,102 @@ async function refreshGuideDossier(uid) {
   return { coupleId, dossier: dossier.exists ? dossier.data() : null };
 }
 
+
+async function exportMyData(uid) {
+  const userSnap = await getDb().doc(`users/${uid}`).get();
+  if (!userSnap.exists) throw httpError(404, 'Your member profile was not found.', 'profile-not-found');
+  const user = userSnap.data();
+  const [privateInteractions, assignments, bridgePrompts, privateMemories, exercises] = await Promise.all([
+    getDb().collection(`users/${uid}/privateInteractions`).limit(500).get(),
+    getDb().collection(`users/${uid}/secretAssignments`).limit(500).get(),
+    getDb().collection(`users/${uid}/bridgePrompts`).limit(500).get(),
+    getDb().collection(`users/${uid}/privateMemories`).limit(500).get(),
+    getDb().collection(`users/${uid}/cloudExercises`).limit(500).get(),
+  ]);
+  let shared = null;
+  if (user.coupleId) {
+    const coupleRef = getDb().doc(`couples/${user.coupleId}`);
+    const coupleSnap = await coupleRef.get();
+    if (coupleSnap.exists && coupleSnap.data().memberUids?.includes(uid)) {
+      const [ledger, sessions, agreements, goals, dossier] = await Promise.all([
+        coupleRef.collection('interactionLedger').limit(500).get(),
+        coupleRef.collection('liveSessions').limit(200).get(),
+        coupleRef.collection('agreements').limit(200).get(),
+        coupleRef.collection('goals').limit(200).get(),
+        coupleRef.collection('guide').doc('dossier').get(),
+      ]);
+      shared = { couple: coupleSnap.data(), interactionLedger: ledger.docs.map(d => ({ id: d.id, ...d.data() })), liveSessions: sessions.docs.map(d => ({ id: d.id, ...d.data() })), agreements: agreements.docs.map(d => ({ id: d.id, ...d.data() })), goals: goals.docs.map(d => ({ id: d.id, ...d.data() })), dossier: dossier.exists ? dossier.data() : null };
+    }
+  }
+  await audit(getDb(), { eventType: 'data-export-created', actorUid: uid, correlationId: oidcContext.getStore()?.correlationId });
+  return { exportedAt: new Date().toISOString(), private: { profile: user, privateInteractions: privateInteractions.docs.map(d => ({ id: d.id, ...d.data() })), secretAssignments: assignments.docs.map(d => ({ id: d.id, ...d.data() })), bridgePrompts: bridgePrompts.docs.map(d => ({ id: d.id, ...d.data() })), privateMemories: privateMemories.docs.map(d => ({ id: d.id, ...d.data() })), cloudExercises: exercises.docs.map(d => ({ id: d.id, ...d.data() })) }, shared };
+}
+
+async function requestAccountDeletion(uid, data) {
+  const reason = clean(data.reason, 300);
+  const requestRef = getDb().collection('deletionRequests').doc(uid);
+  await requestRef.set({ uid, status: 'pending', requestedAt: FieldValue.serverTimestamp(), scheduledEraseAfter: Timestamp.fromMillis(Date.now() + DELETE_GRACE_DAYS * 86400000), reason, idempotencyKey: clean(data.idempotencyKey, 120) || null }, { merge: true });
+  await getDb().doc(`users/${uid}`).set({ deletionRequestedAt: FieldValue.serverTimestamp(), relationshipStatus: 'deletion-pending', updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  await audit(getDb(), { eventType: 'account-deletion-requested', actorUid: uid, correlationId: oidcContext.getStore()?.correlationId });
+  return { ok: true, status: 'pending', graceDays: DELETE_GRACE_DAYS };
+}
+
+async function requestUnlink(uid, data) {
+  const { coupleId, coupleRef } = await requireCouple(uid);
+  await coupleRef.collection('unlinkRequests').doc(uid).set({ uid, status: 'pending', deleteSharedHistory: data.deleteSharedHistory === true, requestedAt: FieldValue.serverTimestamp(), reason: clean(data.reason, 300) }, { merge: true });
+  await audit(getDb(), { eventType: 'couple-unlink-requested', actorUid: uid, coupleId, correlationId: oidcContext.getStore()?.correlationId });
+  return { ok: true, coupleId, sharedHistoryDeletionRequiresBothMembers: true };
+}
+
+async function confirmSharedHistoryDeletion(uid) {
+  const { coupleId, coupleRef, couple } = await requireCouple(uid);
+  await coupleRef.collection('sharedDeletionConfirmations').doc(uid).set({ uid, confirmedAt: FieldValue.serverTimestamp() }, { merge: true });
+  const confirmations = await coupleRef.collection('sharedDeletionConfirmations').get();
+  const confirmed = new Set(confirmations.docs.map(doc => doc.id));
+  const complete = (couple.memberUids || []).every(memberUid => confirmed.has(memberUid));
+  await audit(getDb(), { eventType: 'shared-history-deletion-confirmed', actorUid: uid, coupleId, correlationId: oidcContext.getStore()?.correlationId, metadata: { complete } });
+  return { ok: true, complete };
+}
+
+async function blockMember(uid, data) {
+  const blockedUid = clean(data.blockedUid, 128);
+  if (!blockedUid || blockedUid === uid) throw httpError(400, 'A different member is required.', 'invalid-block');
+  await getDb().doc(`users/${uid}/blockList/${blockedUid}`).set({ blockedUid, active: data.active !== false, reason: clean(data.reason, 200), updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  await audit(getDb(), { eventType: data.active === false ? 'member-unblocked' : 'member-blocked', actorUid: uid, targetUid: blockedUid, correlationId: oidcContext.getStore()?.correlationId });
+  return { ok: true };
+}
+
+async function saveConsentControls(uid, data) {
+  await getDb().doc(`users/${uid}`).set({ consentControls: { sanitizedPromptInfluence: data.sanitizedPromptInfluence === true, transcriptRetention: data.transcriptRetention !== false, dossierFactApproval: data.dossierFactApproval !== false, aiThemeCorrection: true, updatedAt: FieldValue.serverTimestamp() }, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  await audit(getDb(), { eventType: 'consent-controls-updated', actorUid: uid, correlationId: oidcContext.getStore()?.correlationId });
+  return { ok: true };
+}
+
+async function listGuideBeliefs(uid) {
+  const { coupleId, coupleRef } = await requireCouple(uid);
+  const dossier = await coupleRef.collection('guide').doc('dossier').get();
+  const structured = dossier.data()?.structured || {};
+  const direct = structured.directSharedInput || {};
+  const beliefs = Object.entries(direct).filter(([, value]) => Array.isArray(value) ? value.length : value != null && value !== '').map(([key, value]) => ({ id: key, label: key, value, provenance: 'couple.directSharedInput', visibility: 'shared', inputKind: 'direct', lastConfirmedAt: dossier.data()?.updatedAt || null, actions: ['correct', 'outdated', 'incorrect', 'needs-discussion', 'remove', 'request-regeneration'] }));
+  return { coupleId, beliefs, privateRawResponsesExcluded: true };
+}
+
+async function updateGuideBelief(uid, data) {
+  const { coupleId, coupleRef } = await requireCouple(uid);
+  const action = clean(data.action, 40);
+  if (!['correct','outdated','incorrect','needs-discussion','remove','request-regeneration'].includes(action)) throw httpError(400, 'Unsupported belief action.', 'invalid-belief-action');
+  await coupleRef.collection('dossierCorrections').add({ beliefId: clean(data.beliefId, 120), action, replacement: action === 'correct' ? clean(data.replacement, 1000) : null, actorUid: uid, status: 'pending-review', createdAt: FieldValue.serverTimestamp() });
+  await audit(getDb(), { eventType: 'guide-belief-action', actorUid: uid, coupleId, correlationId: oidcContext.getStore()?.correlationId, metadata: { action } });
+  return { ok: true };
+}
+
+async function reportAbuse(uid, data) {
+  const reportRef = getDb().collection('abuseReports').doc();
+  await reportRef.set({ reporterUid: uid, reportedUid: clean(data.reportedUid, 128) || null, coupleId: clean(data.coupleId, 128) || null, category: clean(data.category, 80), descriptionRedacted: '[relationship text redacted by policy]', status: 'new', correlationId: oidcContext.getStore()?.correlationId || null, createdAt: FieldValue.serverTimestamp() });
+  await audit(getDb(), { eventType: 'abuse-report-created', actorUid: uid, targetUid: clean(data.reportedUid, 128) || null, correlationId: oidcContext.getStore()?.correlationId });
+  return { ok: true, reportId: reportRef.id };
+}
+
 const actions = {
   completeRelationshipSetup: (uid, _token, data) => completeRelationshipSetup(uid, data),
   createLiveSession: (uid, _token, data) => createLiveSession(uid, data),
@@ -798,6 +898,15 @@ const actions = {
   saveCoupleIntake: (uid, _token, data) => saveCoupleIntake(uid, data),
   syncRelationshipState: (uid, _token, data) => syncRelationshipState(uid, data),
   getGuideContext: uid => getGuideContext(uid),
+  exportMyData: uid => exportMyData(uid),
+  requestAccountDeletion: (uid, _token, data) => requestAccountDeletion(uid, data),
+  requestUnlink: (uid, _token, data) => requestUnlink(uid, data),
+  confirmSharedHistoryDeletion: uid => confirmSharedHistoryDeletion(uid),
+  blockMember: (uid, _token, data) => blockMember(uid, data),
+  saveConsentControls: (uid, _token, data) => saveConsentControls(uid, data),
+  listGuideBeliefs: uid => listGuideBeliefs(uid),
+  updateGuideBelief: (uid, _token, data) => updateGuideBelief(uid, data),
+  reportAbuse: (uid, _token, data) => reportAbuse(uid, data),
 };
 
 export default async function handler(req, res) {
@@ -805,7 +914,9 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: { code: 'method-not-allowed', message: 'Use POST.' } });
   const oidcToken = req.headers['x-vercel-oidc-token'] || process.env.VERCEL_OIDC_TOKEN;
   const firestore = createFirestoreClient(oidcToken);
-  return oidcContext.run({ token: oidcToken, firestore }, async () => {
+  const cid = correlationId(req);
+  res.setHeader('X-Correlation-Id', cid);
+  return oidcContext.run({ token: oidcToken, firestore, correlationId: cid }, async () => {
   try {
     const token = await requireUser(req);
     const action = clean(req.body?.action, 80);
@@ -814,7 +925,7 @@ export default async function handler(req, res) {
     const result = await operation(token.uid, token, req.body?.data || {});
     return res.status(200).json({ data: result });
   } catch (error) {
-    console.error('Firebase account API error:', error.code || error.message);
+    redactedLog('error', 'Firebase account API error', { code: error.code || 'internal', correlationId: cid });
     return res.status(error.status || 500).json({
       error: { code: error.code || 'internal', message: error.status ? error.message : 'The account service could not complete this request.' },
     });

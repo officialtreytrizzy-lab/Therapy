@@ -54,6 +54,16 @@ service cloud.firestore {
         allow read: if isSelf(uid);
         allow write: if false;
       }
+
+      match /cloudExercises/{exerciseId} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
+
+      match /blockList/{blockedUid} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+      }
     }
 
     match /memberDirectory/{memberCode} {
@@ -76,7 +86,23 @@ service cloud.firestore {
       }
 
       match /guide/{documentId} {
-        allow read, write: if false;
+        allow read: if isCoupleMember(coupleId);
+        allow write: if false;
+      }
+
+      match /dossierCorrections/{correctionId} {
+        allow read: if isCoupleMember(coupleId);
+        allow write: if false;
+      }
+
+      match /unlinkRequests/{uid} {
+        allow read: if isCoupleMember(coupleId);
+        allow write: if false;
+      }
+
+      match /sharedDeletionConfirmations/{uid} {
+        allow read: if isCoupleMember(coupleId);
+        allow write: if false;
       }
 
       match /derivedSignals/{signalId} {
@@ -137,6 +163,23 @@ service cloud.firestore {
         allow read: if isCoupleMember(coupleId);
         allow write: if false;
       }
+    }
+
+    match /deletionRequests/{uid} {
+      allow read: if isSelf(uid);
+      allow write: if false;
+    }
+
+    match /abuseReports/{reportId} {
+      allow read, write: if false;
+    }
+
+    match /systemAuditEvents/{eventId} {
+      allow read, write: if false;
+    }
+
+    match /systemRateLimits/{limitId} {
+      allow read, write: if false;
     }
 
     match /{document=**} {
