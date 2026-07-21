@@ -1,0 +1,83 @@
+(function(){
+const MODULES=[
+{id:'arrival',title:'Arrive & regulate',short:'Arrive',minutes:2},
+{id:'story-a',title:'First perspective',short:'Story A',minutes:4},
+{id:'reflect',title:'Guide reflection',short:'Reflect',minutes:3},
+{id:'story-b',title:'Second perspective',short:'Story B',minutes:4},
+{id:'mirror',title:'Hear before replying',short:'Mirror',minutes:4},
+{id:'needs',title:'Feelings & needs',short:'Needs',minutes:4},
+{id:'pattern',title:'Map the cycle',short:'Pattern',minutes:3},
+{id:'exercise',title:'Live practice',short:'Practice',minutes:6},
+{id:'repair',title:'Request & agreement',short:'Repair',minutes:5},
+{id:'debrief',title:'Debrief & next step',short:'Debrief',minutes:3}
+];
+const LESSONS={
+talk_it_out:{icon:'◉',title:'Talk It Out',duration:'35 min',level:'Balanced dialogue',description:'Move a hard topic from reaction to understanding, then leave with one clear next step.',color:'#63d58d'},
+speaker_listener:{icon:'◌',title:'Speaker & Listener',duration:'28 min',level:'Listening skill',description:'Practice one person speaking while the other accurately reflects before responding.',color:'#80bfff'},
+cool_down:{icon:'◒',title:'Cool Down',duration:'16 min',level:'Nervous-system reset',description:'Lower emotional intensity before deciding whether to continue, pause, or reschedule.',color:'#90d7c1'},
+repair:{icon:'↻',title:'Repair After Conflict',duration:'30 min',level:'Accountability',description:'Name impact, own your part without defensiveness, and create a repair that can be felt.',color:'#d9b27c'},
+decision_room:{icon:'◇',title:'Decision Room',duration:'32 min',level:'Shared problem-solving',description:'Separate positions from needs and build an option neither person has to disappear inside.',color:'#bf9ee8'},
+weekly_meeting:{icon:'⌁',title:'Weekly Relationship Meeting',duration:'24 min',level:'Connection ritual',description:'Appreciation, logistics, pressure points, intimacy, and one priority for the week.',color:'#f0c56e'},
+private_coaching:{icon:'♡',title:'Private Reflection',duration:'18 min',level:'Individual clarity',description:'Understand your reaction, identify assumptions, and prepare a fair request before talking.',color:'#d598bc'}
+};
+const FEELINGS=['hurt','angry','anxious','lonely','dismissed','overwhelmed','confused','disappointed','afraid','unimportant','pressured','hopeful'];
+const NEEDS=['reassurance','respect','clarity','consistency','affection','space','honesty','safety','support','trust','autonomy','quality time'];
+const PATTERNS=[
+{id:'pursue-withdraw',title:'Pursue ↔ withdraw',desc:'One reaches harder while the other pulls away.'},
+{id:'criticize-defend',title:'Criticize ↔ defend',desc:'Pain comes out as blame, then protection comes out as defense.'},
+{id:'mindread-correct',title:'Assume ↔ correct',desc:'One assigns meaning while the other debates the details.'},
+{id:'fix-dismiss',title:'Fix ↔ feel dismissed',desc:'Solutions arrive before the emotion feels understood.'},
+{id:'escalate-shutdown',title:'Escalate ↔ shut down',desc:'Intensity rises until one person emotionally leaves.'},
+{id:'other',title:'Something else',desc:'Name the recurring loop in your own words.'}
+];
+function ensurePremiumState(){
+state.profile=state.profile||{};
+state.profile.partnerName=state.profile.partnerName||'Partner';
+state.sessions=state.sessions||[];
+state.messages=state.messages||{};
+state.sessions.forEach(s=>{
+if(!s.lesson){
+const existing=(state.messages[s.id]||[]).filter(m=>m.role==='user').map(m=>m.content).join('\n');
+s.lesson={step:s.status==='completed'?MODULES.length-1:0,responses:existing?{'story-a':existing}:{},choices:{},currentSpeaker:'self',handoff:false,exerciseRound:0,timerSeconds:90,completed:s.status==='completed'};
+}
+});
+save();
+}
+ensurePremiumState();
+function lessonDef(type){return LESSONS[type]||LESSONS.talk_it_out}
+function speakerName(s){return s.lesson.currentSpeaker==='partner'?state.profile.partnerName:state.profile.displayName}
+function otherName(s){return s.lesson.currentSpeaker==='partner'?state.profile.displayName:state.profile.partnerName}
+function sessionProgress(s){return Math.round((Math.min(s.lesson.step,MODULES.length-1)/(MODULES.length-1))*100)}
+function response(s,key){return s.lesson.responses[key]||''}
+function choice(s,key){return s.lesson.choices[key]||''}
+function selectedClass(value,current){return String(value)===String(current)?'selected':''}
+function setResponse(s,key,value){s.lesson.responses[key]=value;save()}
+function setChoice(s,key,value){s.lesson.choices[key]=value;save()}
+function findWords(text,list){const lower=(text||'').toLowerCase();return list.filter(w=>lower.includes(w)).slice(0,3)}
+function cleanSnippet(text,max=120){const t=(text||'').replace(/\s+/g,' ').trim();return t.length>max?t.slice(0,max-1)+'…':t}
+function contextAnalysis(s){
+const a=response(s,'story-a');const b=response(s,'story-b');const all=[a,b,response(s,'verify'),response(s,'mirror'),response(s,'need-detail')].join(' ');
+const emotions=[...new Set(findWords(all,FEELINGS))];
+const needs=[...new Set(findWords(all,NEEDS))];
+const absolutes=/\b(always|never|every time|nothing|everything)\b/i.test(all);
+const motives=/\b(don't care|doesn't care|trying to|wanted to hurt|on purpose|selfish)\b/i.test(all);
+return {emotions,needs,absolutes,motives,a,b};
+}
+function guideReflection(s){
+const x=contextAnalysis(s);const first=cleanSnippet(x.a||s.topic,105);const emotion=x.emotions[0]||'emotionally affected';const need=x.needs[0]||'clarity and responsiveness';
+let text=`I’m hearing that ${state.profile.displayName} experienced “${first}” as ${emotion}, and that the deeper need may be ${need}.`;
+if(x.motives)text+=' I also notice an interpretation about your partner’s motive. The impact is real, but the intention is not established yet.';
+if(x.absolutes)text+=' Words like “always” or “never” may be signaling accumulated pain; we still need one concrete example to understand the pattern fairly.';
+text+=` Before ${state.profile.partnerName} responds, what did I understand correctly, and what important context am I missing?`;
+return text;
+}
+function probeFor(s){
+const x=contextAnalysis(s);
+if(x.motives)return 'What did you directly observe, and what meaning did you add afterward?';
+if(x.emotions.length===0)return 'When that happened, what changed in your body or emotion before you formed an explanation?';
+if(x.needs.length===0)return 'What did you need in that moment that you did not know how to ask for clearly?';
+return `What would ${x.needs[0]} have looked like as one specific action in that moment?`;
+}
+function fairSummary(s){
+const x=contextAnalysis(s);const feeling=(choice(s,'feelings')||x.emotions.join(', ')||'hurt and disconnection');const need=(choice(s,'needs')||x.needs.join(', ')||'clarity, respect, and reassurance');const pattern=choice(s,'pattern')||'a reactive cycle that both partners want to interrupt';
+const req=response(s,'request')||'Use one direct request instead of assigning 
