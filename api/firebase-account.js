@@ -137,35 +137,60 @@ async function provisionProfile(uid, token, data) {
   const userRef = getDb().doc(`users/${uid}`);
   return getDb().runTransaction(async transaction => {
     const existing = await transaction.get(userRef);
-    if (existing.exists) return { memberCode: existing.data().memberCode, profile: existing.data() };
+    const current = existing.exists ? existing.data() : null;
+    let code = /^\d{8}$/.test(String(current?.memberCode || '')) ? String(current.memberCode) : null;
+    let directoryRef = null;
 
-    let code;
-    let directoryRef;
-    for (let attempt = 0; attempt < 16; attempt += 1) {
-      code = randomMemberCode();
-      directoryRef = getDb().doc(`memberDirectory/${code}`);
-      if (!(await transaction.get(directoryRef)).exists) break;
-      code = null;
+    if (code) {
+      const candidateRef = getDb().doc(`memberDirectory/${code}`);
+      const candidate = await transaction.get(candidateRef);
+      if (!candidate.exists || candidate.data()?.uid === uid) directoryRef = candidateRef;
+      else code = null;
+    }
+
+    if (!code) {
+      for (let attempt = 0; attempt < 16; attempt += 1) {
+        const candidateCode = randomMemberCode();
+        const candidateRef = getDb().doc(`memberDirectory/${candidateCode}`);
+        const candidate = await transaction.get(candidateRef);
+        if (!candidate.exists) {
+          code = candidateCode;
+          directoryRef = candidateRef;
+          break;
+        }
+      }
     }
     if (!code || !directoryRef) throw httpError(503, 'Could not allocate a member ID. Try again.', 'member-id-unavailable');
 
     const profile = {
+      ...(current || {}),
       uid,
       memberCode: code,
-      displayName: clean(data.displayName || token.name || token.email?.split('@')[0] || 'Member', 80),
-      pronouns: clean(data.pronouns, 40),
-      email: token.email || null,
-      photoURL: token.picture || null,
-      relationshipStatus: 'solo',
-      coupleId: null,
-      relationshipSetupComplete: false,
-      onboardingComplete: false,
-      dataPolicyVersion: 2,
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
+      displayName: clean(data.displayName || current?.displayName || token.name || token.email?.split('@')[0] || 'Member', 80),
+      pronouns: clean(data.pronouns || current?.pronouns, 40),
+      email: token.email || current?.email || null,
+      emailVerified: token.email_verified === true,
+      authProvider: 'email-link',
+      photoURL: token.picture || current?.photoURL || null,
+      relationshipStatus: current?.relationshipStatus || 'solo',
+      coupleId: current?.coupleId || null,
+      relationshipSetupComplete: current?.relationshipSetupComplete === true,
+      onboardingComplete: current?.onboardingComplete === true,
+      dataPolicyVersion: Math.max(2, Number(current?.dataPolicyVersion || 0)),
     };
-    transaction.create(userRef, profile);
-    transaction.create(directoryRef, { uid, active: true, createdAt: FieldValue.serverTimestamp() });
+
+    transaction.set(userRef, {
+      ...profile,
+      ...(existing.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+      lastAuthenticatedAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: existing.exists });
+    transaction.set(directoryRef, {
+      uid,
+      active: true,
+      ...(existing.exists ? {} : { createdAt: FieldValue.serverTimestamp() }),
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
     return { memberCode: code, profile };
   });
 }

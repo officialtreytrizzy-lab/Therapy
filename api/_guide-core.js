@@ -96,6 +96,10 @@ async function accessToken() {
   if (!token) throw new Error('Google access token is unavailable.');
   return token;
 }
+
+export async function getGoogleAccessToken() {
+  return accessToken();
+}
 function parseJson(text) {
   const raw = String(text || '').trim();
   const candidates = [raw, raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()];

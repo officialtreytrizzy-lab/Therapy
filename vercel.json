@@ -4,14 +4,40 @@
   "outputDirectory": "public",
   "cleanUrls": true,
   "functions": {
-    "api/guide.js": { "maxDuration": 60 },
-    "api/firebase-account.js": { "maxDuration": 30 }
+    "api/guide.js": {
+      "maxDuration": 60
+    },
+    "api/firebase-account.js": {
+      "maxDuration": 30
+    },
+    "api/auth-email-link.js": {
+      "maxDuration": 30
+    }
   },
   "rewrites": [
-    { "source": "/api/healthz", "destination": "/api/healthz.js" },
-    { "source": "/api/firebase-config", "destination": "/api/firebase-config.js" },
-    { "source": "/api/firebase-account", "destination": "/api/firebase-account.js" },
-    { "source": "/api/guide", "destination": "/api/guide.js" },
-    { "source": "/(.*)", "destination": "/" }
+    {
+      "source": "/api/healthz",
+      "destination": "/api/healthz.js"
+    },
+    {
+      "source": "/api/firebase-config",
+      "destination": "/api/firebase-config.js"
+    },
+    {
+      "source": "/api/auth-email-link",
+      "destination": "/api/auth-email-link.js"
+    },
+    {
+      "source": "/api/firebase-account",
+      "destination": "/api/firebase-account.js"
+    },
+    {
+      "source": "/api/guide",
+      "destination": "/api/guide.js"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/"
+    }
   ]
 }
