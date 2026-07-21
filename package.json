@@ -1,17 +1,17 @@
 {
-  "name": "us-for-real-couple-wellness",
-  "version": "1.1.0",
-  "private": true,
-  "scripts": {
-    "build": "node -e \"console.log('Static Firebase-enabled app ready')\"",
-    "check": "node --check public/firebase-client.js && node --check api/firebase-account.js"
-  },
-  "dependencies": {
-    "@google-cloud/firestore": "^8.6.0",
-    "google-auth-library": "^10.9.0"
-  },
-  "engines": {
-    "node": "22.x"
-  },
-  "type": "module"
+   "name": "us-for-real-couple-wellness",
+   "version": "1.1.0",
+   "private": true,
+   "scripts": {
+      "build": "node -e \"console.log('Static Firebase-enabled app ready')\"",
+      "check": "node --check public/app1.js && node --check public/firebase-client.js && node --check public/relationship-v2.js && node --check api/firebase-account.js && node --check api/_guide-core.js && node --check api/guide.js"
+   },
+   "dependencies": {
+      "@google-cloud/firestore": "^8.6.0",
+      "google-auth-library": "^10.9.0"
+   },
+   "engines": {
+      "node": "22.x"
+   },
+   "type": "module"
 }

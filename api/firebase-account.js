@@ -156,7 +156,9 @@ async function provisionProfile(uid, token, data) {
       photoURL: token.picture || null,
       relationshipStatus: 'solo',
       coupleId: null,
+      relationshipSetupComplete: false,
       onboardingComplete: false,
+      dataPolicyVersion: 2,
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     };
@@ -252,6 +254,8 @@ async function respondToPartnerInvite(uid, data) {
       story: { whereMet: '', howMet: '', firstDate: '', firstImpression: '', favoriteSharedMemory: '' },
       strengths: [], sharedValues: [], rituals: [], hopes: [], currentPriorities: [],
       intakeVersion: 1,
+      dataPolicyVersion: 2,
+      interactionModel: 'privacy-separated',
       linkedAt: FieldValue.serverTimestamp(),
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
@@ -267,6 +271,7 @@ async function respondToPartnerInvite(uid, data) {
       transaction.update(getDb().doc(`users/${memberUid}`), {
         coupleId: coupleRef.id,
         relationshipStatus: 'linked',
+        relationshipSetupComplete: true,
         updatedAt: FieldValue.serverTimestamp(),
       });
     }
@@ -278,12 +283,22 @@ async function respondToPartnerInvite(uid, data) {
 async function savePersonalIntake(uid, data) {
   await getDb().doc(`users/${uid}`).set({
     personalIntake: {
-      loveLanguage: clean(data.loveLanguage, 80),
-      conflictStyle: clean(data.conflictStyle, 120),
-      stressSigns: clean(data.stressSigns, 500),
-      repairPreferences: clean(data.repairPreferences, 500),
-      communicationNeeds: clean(data.communicationNeeds, 500),
+      loveLanguage: clean(data.loveLanguage, 120),
+      conflictStyle: clean(data.conflictStyle, 300),
+      stressSigns: clean(data.stressSigns, 1000),
+      triggers: clean(data.triggers, 1200),
+      shutdownSigns: clean(data.shutdownSigns, 1000),
+      repairPreferences: clean(data.repairPreferences, 1200),
+      communicationNeeds: clean(data.communicationNeeds, 1200),
+      feelingHeard: clean(data.feelingHeard, 1000),
+      boundaries: clean(data.boundaries, 1200),
+      preferredPace: clean(data.preferredPace, 500),
+      accountabilityPreference: clean(data.accountabilityPreference, 700),
+      culturalContext: clean(data.culturalContext, 1000),
+      privateNoShare: clean(data.privateNoShare, 1000),
+      relationshipGoals: arrayOfText(data.relationshipGoals, 10, 240),
       funFacts: arrayOfText(data.funFacts, 10, 160),
+      source: 'user-input',
       updatedAt: FieldValue.serverTimestamp(),
     },
     onboardingComplete: true,
@@ -304,66 +319,127 @@ function listText(values) {
 
 async function rebuildDossier(coupleId) {
   const coupleRef = getDb().doc(`couples/${coupleId}`);
-  const [coupleSnap, membersSnap, sessionsSnap, goalsSnap, agreementsSnap, memoriesSnap] = await Promise.all([
+  await purgeExpiredDerivedSignals(coupleRef).catch(() => 0);
+  const [coupleSnap, membersSnap, liveSessionsSnap, legacySessionsSnap, goalsSnap, agreementsSnap, ledgerSnap] = await Promise.all([
     coupleRef.get(),
     coupleRef.collection('members').get(),
-    coupleRef.collection('sessions').orderBy('updatedAt', 'desc').limit(12).get(),
-    coupleRef.collection('goals').where('status', '==', 'active').limit(12).get(),
-    coupleRef.collection('agreements').where('status', '==', 'active').limit(12).get(),
-    coupleRef.collection('sharedMemories').orderBy('updatedAt', 'desc').limit(20).get(),
+    coupleRef.collection('liveSessions').orderBy('updatedAt', 'desc').limit(20).get(),
+    coupleRef.collection('sessions').orderBy('updatedAt', 'desc').limit(20).get(),
+    coupleRef.collection('goals').where('status', '==', 'active').limit(30).get(),
+    coupleRef.collection('agreements').where('status', '==', 'active').limit(30).get(),
+    coupleRef.collection('interactionLedger').orderBy('createdAt', 'desc').limit(60).get(),
   ]);
   if (!coupleSnap.exists) return;
   const couple = coupleSnap.data();
   const members = membersSnap.docs.map(doc => doc.data());
-  const sessions = sessionsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-  const goals = goalsSnap.docs.map(doc => doc.data());
-  const agreements = agreementsSnap.docs.map(doc => doc.data());
-  const memories = memoriesSnap.docs.map(doc => doc.data());
+  const liveSessions = liveSessionsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  const legacySessions = legacySessionsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  const goals = goalsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  const agreements = agreementsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+  const ledger = ledgerSnap.docs.map(doc => ({ id: doc.id, ...doc.data() }));
   const names = members.map(member => member.displayName).filter(Boolean);
-
+  const story = couple.story || {};
+  const directFacts = {
+    anniversary: couple.anniversary ? dateText(couple.anniversary) : null,
+    whereMet: clean(story.whereMet, 240) || null,
+    howMet: clean(story.howMet, 800) || null,
+    firstDate: clean(story.firstDate, 500) || null,
+    firstImpression: clean(story.firstImpression, 500) || null,
+    favoriteSharedMemory: clean(story.favoriteSharedMemory, 800) || null,
+    strengths: arrayOfText(couple.strengths),
+    sharedValues: arrayOfText(couple.sharedValues),
+    rituals: arrayOfText(couple.rituals, 12, 180),
+    hopes: arrayOfText(couple.hopes),
+    currentPriorities: arrayOfText(couple.currentPriorities, 8, 240),
+    relationshipPatterns: couple.relationshipPatterns || {},
+  };
+  const completedLiveSessions = liveSessions.filter(session => session.status === 'completed');
+  const completedLegacySessions = legacySessions.filter(session => session.status === 'completed' && session.source !== 'demo');
   const structured = {
     coupleId,
     memberUids: couple.memberUids || [],
     memberNames: names,
-    anniversary: dateText(couple.anniversary),
-    story: couple.story || {},
-    strengths: couple.strengths || [],
-    sharedValues: couple.sharedValues || [],
-    rituals: couple.rituals || [],
-    hopes: couple.hopes || [],
-    currentPriorities: couple.currentPriorities || [],
-    activeGoals: goals.map(goal => ({ title: goal.title, description: goal.description, progress: goal.progress })),
-    activeAgreements: agreements.map(agreement => ({ title: agreement.title, terms: agreement.terms })),
-    recentSharedMemories: memories.map(memory => ({ title: memory.title, content: memory.content, category: memory.category })),
-    recentSessions: sessions.map(session => ({
-      type: session.type, topic: session.topic, status: session.status, summary: session.summary,
-      progressSignals: session.progressSignals || [], concerns: session.concerns || [],
+    directSharedInput: directFacts,
+    activeGoals: goals.map(goal => ({ id: goal.id, title: goal.title, description: goal.description, progress: goal.progress, source: 'user-input' })),
+    activeAgreements: agreements.map(agreement => ({ id: agreement.id, title: agreement.title, terms: agreement.terms, source: 'user-input' })),
+    recentSharedSessionEvidence: [...completedLiveSessions, ...completedLegacySessions].slice(0, 20).map(session => ({
+      id: session.id,
+      topic: session.topic,
+      type: session.type,
+      resolutionStatus: session.resolutionStatus || null,
+      resolutionSummary: session.resolutionSummary || session.summary || null,
+      unresolved: session.unresolved || [],
+      fairnessNotes: session.fairnessNotes || [],
+      source: 'shared-session',
     })),
+    recentInteractionMetadata: ledger.map(event => ({
+      id: event.id,
+      eventType: event.eventType,
+      sessionId: event.sessionId || null,
+      visibility: event.visibility,
+      summary: event.summary,
+      source: event.source,
+    })),
+    sourcePolicy: {
+      directUserInputIsPrimary: true,
+      privateRawInputExcluded: true,
+      partnerBridgePromptsExcluded: true,
+      emptyFieldsOmitted: true,
+      sessionHistoryWindow: 20,
+    },
   };
 
-  const story = couple.story || {};
-  const markdown = `# Couple Guide Dossier\n\n` +
-    `> Living context for the Guide. Treat this as revisable evidence, not unquestionable truth. Recent direct statements override stale notes.\n\n` +
-    `## Couple identity\n- Couple ID: ${coupleId}\n- Members: ${names.join(' & ') || 'Not established'}\n- Anniversary: ${structured.anniversary}\n\n` +
-    `## Their story\n- Where they met: ${story.whereMet || 'Not provided'}\n- How they met: ${story.howMet || 'Not provided'}\n- First date: ${story.firstDate || 'Not provided'}\n- First impressions: ${story.firstImpression || 'Not provided'}\n- Favorite shared memory: ${story.favoriteSharedMemory || 'Not provided'}\n\n` +
-    `## Strengths\n${listText(couple.strengths)}\n\n## Shared values\n${listText(couple.sharedValues)}\n\n` +
-    `## Rituals and connection habits\n${listText(couple.rituals)}\n\n## Hopes\n${listText(couple.hopes)}\n\n` +
-    `## Current priorities\n${listText(couple.currentPriorities)}\n\n` +
-    `## Active goals\n${listText(goals.map(goal => `${goal.title}: ${goal.description || ''} (${goal.progress || 0}% complete)`))}\n\n` +
-    `## Active agreements\n${listText(agreements.map(agreement => `${agreement.title}: ${agreement.terms || ''}`))}\n\n` +
-    `## Recent shared memories\n${listText(memories.map(memory => `${memory.title}: ${memory.content || ''}`))}\n\n` +
-    `## Recent session evidence\n${listText(sessions.map(session => `${session.topic || session.type}: ${session.summary || 'No summary yet'}`))}\n\n` +
-    `## Guide use rules\n- Never treat an inference as a fact.\n- Verify conflicting or outdated details with the couple.\n- Never reveal one partner’s private reflection to the other.\n- Use this dossier to personalize questions, examples, exercises, and follow-up.\n- Track progress and setbacks without shaming either partner.\n- Equal dignity does not require equal responsibility.\n`;
+  const sections = [];
+  sections.push('# Couple Guide Dossier');
+  sections.push('> Shared, revisable context built from direct couple input and shared app interactions. Private member wording is excluded. Current direct statements override older summaries.');
+  sections.push(`## Couple identity
+- Couple ID: ${coupleId}
+- Members: ${names.join(' & ')}`);
+  const storyLines = [
+    directFacts.anniversary && `- Anniversary: ${directFacts.anniversary}`,
+    directFacts.whereMet && `- Where they met: ${directFacts.whereMet}`,
+    directFacts.howMet && `- How they met: ${directFacts.howMet}`,
+    directFacts.firstDate && `- First date: ${directFacts.firstDate}`,
+    directFacts.firstImpression && `- First impressions: ${directFacts.firstImpression}`,
+    directFacts.favoriteSharedMemory && `- Favorite shared memory: ${directFacts.favoriteSharedMemory}`,
+  ].filter(Boolean);
+  if (storyLines.length) sections.push(`## Their story
+${storyLines.join('\n')}`);
+  if (directFacts.strengths.length) sections.push(`## Strengths
+${directFacts.strengths.map(value => `- ${value}`).join('\n')}`);
+  if (directFacts.sharedValues.length) sections.push(`## Shared values
+${directFacts.sharedValues.map(value => `- ${value}`).join('\n')}`);
+  if (directFacts.rituals.length) sections.push(`## Rituals
+${directFacts.rituals.map(value => `- ${value}`).join('\n')}`);
+  if (directFacts.hopes.length) sections.push(`## Hopes
+${directFacts.hopes.map(value => `- ${value}`).join('\n')}`);
+  if (directFacts.currentPriorities.length) sections.push(`## Current priorities
+${directFacts.currentPriorities.map(value => `- ${value}`).join('\n')}`);
+  if (goals.length) sections.push(`## Active goals
+${goals.map(goal => `- ${goal.title}: ${goal.description || ''} (${goal.progress || 0}% complete)`).join('\n')}`);
+  if (agreements.length) sections.push(`## Active agreements
+${agreements.map(agreement => `- ${agreement.title}: ${agreement.terms || ''}`).join('\n')}`);
+  const evidence = structured.recentSharedSessionEvidence.filter(item => item.resolutionSummary);
+  if (evidence.length) sections.push(`## Recent shared-session evidence
+${evidence.map(item => `- ${item.topic || item.type}: ${item.resolutionSummary}`).join('\n')}`);
+  sections.push(`## Guide use rules\n- Current session input is primary; this dossier is secondary context.\n- Never treat an inference as a fact.\n- Verify conflicting or outdated details.\n- Never expose one member’s private reflection, answer, task, or assignment.\n- Be fair without forcing equal blame.\n- Use shared history to improve safety, relevance, follow-up, and accountability—not to predetermine the outcome.`);
 
   await coupleRef.collection('guide').doc('dossier').set({
-    markdown,
+    markdown: sections.join('\n\n'),
     structured,
     version: FieldValue.increment(1),
-    sourceCounts: { members: members.length, sessions: sessions.length, goals: goals.length, agreements: agreements.length, memories: memories.length },
+    sourceCounts: {
+      members: members.length,
+      directSharedFields: Object.values(directFacts).filter(value => Array.isArray(value) ? value.length : Boolean(value)).length,
+      liveSessions: completedLiveSessions.length,
+      legacySessions: completedLegacySessions.length,
+      goals: goals.length,
+      agreements: agreements.length,
+      interactionEvents: ledger.length,
+    },
     updatedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
 }
-
 
 function stableDocumentId(value, index) {
   const cleaned = clean(value, 100).replace(/[^A-Za-z0-9_-]/g, '_');
@@ -416,6 +492,7 @@ async function syncRelationshipState(uid, data) {
       concerns: arrayOfText(session.concerns, 12, 240),
       createdAtClient: clean(session.createdAt, 80),
       syncedBy: uid,
+      source: 'user-input',
     }));
 
   const goals = (Array.isArray(data.goals) ? data.goals : []).slice(0, 30).map((goal, index) => ({
@@ -452,19 +529,19 @@ async function syncRelationshipState(uid, data) {
     }));
 
   await Promise.all([
-    replaceRelationshipCollection(coupleRef, 'sessions', sessions),
-    replaceRelationshipCollection(coupleRef, 'goals', goals),
-    replaceRelationshipCollection(coupleRef, 'agreements', agreements),
-    replaceRelationshipCollection(coupleRef, 'sharedMemories', memories),
+    upsertOwnedCollection(coupleRef, 'sessions', uid, sessions),
+    upsertOwnedCollection(coupleRef, 'goals', uid, goals),
+    upsertOwnedCollection(coupleRef, 'agreements', uid, agreements),
   ]);
   await coupleRef.set({ lastProgressSyncAt: FieldValue.serverTimestamp(), lastProgressSyncBy: uid }, { merge: true });
+  await writeInteractionLedger(coupleRef, { eventType: 'member-state-synced', actorUid: uid, visibility: 'shared-metadata', source: 'user-input', summary: 'Member app activity synchronized', metadata: { sessions: sessions.length, goals: goals.length, agreements: agreements.length } });
   await rebuildDossier(coupleId);
   return {
     ok: true,
     mode: 'couple',
     coupleId,
     synced: true,
-    counts: { sessions: sessions.length, goals: goals.length, agreements: agreements.length, memories: memories.length },
+    counts: { sessions: sessions.length, goals: goals.length, agreements: agreements.length, privateMemoriesExcluded: memories.length },
   };
 }
 
@@ -493,6 +570,17 @@ async function saveCoupleIntake(uid, data) {
     rituals: arrayOfText(data.rituals, 12, 180),
     hopes: arrayOfText(data.hopes),
     currentPriorities: arrayOfText(data.currentPriorities, 8, 240),
+    relationshipPatterns: {
+      recurringTopics: arrayOfText(data.recurringTopics, 12, 240),
+      escalationPattern: clean(data.escalationPattern, 1800),
+      successfulRepairs: clean(data.successfulRepairs, 1800),
+      affectionPreferences: clean(data.affectionPreferences, 1200),
+      currentStressors: arrayOfText(data.currentStressors, 12, 240),
+      privacyAgreements: clean(data.privacyAgreements, 1200),
+      sessionGoals: arrayOfText(data.sessionGoals, 10, 240),
+      culturalContext: clean(data.culturalContext, 1200),
+    },
+    intakeSource: 'user-input',
     intakeVersion: FieldValue.increment(1),
     intakeUpdatedBy: uid,
     updatedAt: FieldValue.serverTimestamp(),
@@ -511,7 +599,186 @@ async function getGuideContext(uid) {
   return { mode: 'couple', coupleId: user.coupleId, dossier: dossierSnap.exists ? dossierSnap.data() : null };
 }
 
+
+async function completeRelationshipSetup(uid, data) {
+  const mode = data.mode === 'partner' ? 'partner' : 'solo';
+  const userRef = getDb().doc(`users/${uid}`);
+  if (mode === 'solo') {
+    await userRef.set({
+      relationshipSetupComplete: true,
+      relationshipStatus: 'solo',
+      updatedAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+    return { mode: 'solo', linked: false };
+  }
+  const result = await requestPartnerLink(uid, data);
+  await userRef.set({ relationshipSetupComplete: true, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  return { mode: 'partner', linked: false, pending: true, ...result };
+}
+
+async function requireCouple(uid) {
+  const userSnap = await getDb().doc(`users/${uid}`).get();
+  const user = userSnap.data();
+  if (!user?.coupleId) throw httpError(409, 'Link a partner before using a joint session.', 'couple-required');
+  const coupleRef = getDb().doc(`couples/${user.coupleId}`);
+  const coupleSnap = await coupleRef.get();
+  if (!coupleSnap.exists || !coupleSnap.data().memberUids?.includes(uid)) {
+    throw httpError(403, 'Couple access denied.', 'forbidden');
+  }
+  return { user, coupleId: user.coupleId, coupleRef, couple: coupleSnap.data() };
+}
+
+function safeMinutes(value) {
+  const minutes = Number(value);
+  if (![30, 45, 60, 75, 90].includes(minutes)) return 60;
+  return minutes;
+}
+
+async function writeInteractionLedger(coupleRef, event) {
+  const ref = coupleRef.collection('interactionLedger').doc();
+  await ref.set({
+    eventType: clean(event.eventType, 80),
+    actorUid: event.actorUid || null,
+    sessionId: event.sessionId || null,
+    source: event.source || 'user-input',
+    visibility: event.visibility || 'shared-metadata',
+    summary: clean(event.summary, 500),
+    metadata: event.metadata && typeof event.metadata === 'object' ? event.metadata : {},
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return ref.id;
+}
+
+async function createLiveSession(uid, data) {
+  const { coupleId, coupleRef, couple } = await requireCouple(uid);
+  const topic = clean(data.topic, 500);
+  const scenario = clean(data.scenario, 3000);
+  const desiredOutcome = clean(data.desiredOutcome, 1000);
+  if (!topic) throw httpError(400, 'Describe the topic for this session.', 'topic-required');
+  const type = clean(data.type, 80) || 'custom_session';
+  const durationLimitMinutes = safeMinutes(data.durationLimitMinutes);
+  const ref = coupleRef.collection('liveSessions').doc();
+  const session = {
+    coupleId,
+    memberUids: couple.memberUids,
+    createdBy: uid,
+    type,
+    custom: type === 'custom_session',
+    topic,
+    scenario,
+    desiredOutcome,
+    emotionalIntensity: Math.max(1, Math.min(10, Number(data.emotionalIntensity) || 5)),
+    safetyConcern: clean(data.safetyConcern, 120),
+    status: 'waiting',
+    phase: 'intake',
+    resolutionStatus: 'not-started',
+    durationLimitMinutes,
+    maxDurationSeconds: durationLimitMinutes * 60,
+    participantStatus: Object.fromEntries((couple.memberUids || []).map(memberUid => [memberUid, memberUid === uid ? 'ready' : 'invited'])),
+    startedAt: null,
+    endedAt: null,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+    estimatedRateMinUsd: 150,
+    estimatedRateMaxUsd: 400,
+  };
+  await ref.create(session);
+  await writeInteractionLedger(coupleRef, {
+    eventType: 'live-session-created', actorUid: uid, sessionId: ref.id,
+    summary: topic, metadata: { type, durationLimitMinutes },
+  });
+  return { id: ref.id, ...session };
+}
+
+async function joinLiveSession(uid, data) {
+  const { coupleRef, couple } = await requireCouple(uid);
+  const sessionId = clean(data.sessionId, 100);
+  const ref = coupleRef.collection('liveSessions').doc(sessionId);
+  return getDb().runTransaction(async transaction => {
+    const snap = await transaction.get(ref);
+    if (!snap.exists) throw httpError(404, 'Session not found.', 'session-not-found');
+    const session = snap.data();
+    if (!session.memberUids?.includes(uid)) throw httpError(403, 'Session access denied.', 'forbidden');
+    const status = { ...(session.participantStatus || {}), [uid]: 'ready' };
+    const allReady = (couple.memberUids || []).every(memberUid => status[memberUid] === 'ready');
+    transaction.update(ref, {
+      participantStatus: status,
+      status: allReady && session.status === 'waiting' ? 'active' : session.status,
+      startedAt: allReady && !session.startedAt ? FieldValue.serverTimestamp() : session.startedAt,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return { id: sessionId, allReady, status: allReady ? 'active' : session.status };
+  });
+}
+
+async function heartbeatLiveSession(uid, data) {
+  const { coupleRef } = await requireCouple(uid);
+  const sessionId = clean(data.sessionId, 100);
+  const sessionRef = coupleRef.collection('liveSessions').doc(sessionId);
+  const snap = await sessionRef.get();
+  if (!snap.exists || !snap.data().memberUids?.includes(uid)) throw httpError(404, 'Session not found.', 'session-not-found');
+  await sessionRef.collection('presence').doc(uid).set({
+    uid,
+    state: clean(data.state, 40) || 'online',
+    currentModule: clean(data.currentModule, 80),
+    lastSeenAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
+  return { ok: true };
+}
+
+async function saveAssignmentFeedback(uid, data) {
+  const assignmentId = clean(data.assignmentId, 100);
+  if (!assignmentId) throw httpError(400, 'Assignment ID is required.', 'assignment-required');
+  const assignmentRef = getDb().doc(`users/${uid}/secretAssignments/${assignmentId}`);
+  const snap = await assignmentRef.get();
+  if (!snap.exists) throw httpError(404, 'Assignment not found.', 'assignment-not-found');
+  await assignmentRef.set({
+    selfReflection: clean(data.selfReflection, 2000),
+    completionRating: Math.max(0, Math.min(10, Number(data.completionRating) || 0)),
+    completedAt: FieldValue.serverTimestamp(),
+    status: 'completed',
+  }, { merge: true });
+  return { ok: true };
+}
+
+async function purgeExpiredDerivedSignals(coupleRef) {
+  const now = Timestamp.now();
+  const snapshot = await coupleRef.collection('derivedSignals').where('expiresAt', '<=', now).limit(200).get();
+  if (snapshot.empty) return 0;
+  const batch = getDb().batch();
+  snapshot.docs.forEach(doc => batch.delete(doc.ref));
+  await batch.commit();
+  return snapshot.size;
+}
+
+async function upsertOwnedCollection(coupleRef, collectionName, uid, items) {
+  const collection = coupleRef.collection(collectionName);
+  const existing = await collection.where('syncedBy', '==', uid).get();
+  const normalized = items.map((item, index) => ({
+    ...item,
+    id: `${uid}_${stableDocumentId(item.id, index)}`,
+    syncedBy: uid,
+  }));
+  const incomingIds = new Set(normalized.map(item => item.id));
+  const writes = [];
+  existing.docs.forEach(doc => { if (!incomingIds.has(doc.id)) writes.push({ type: 'delete', ref: doc.ref }); });
+  normalized.forEach(item => writes.push({
+    type: 'set', ref: collection.doc(item.id),
+    data: { ...item, updatedAt: FieldValue.serverTimestamp() },
+  }));
+  for (let offset = 0; offset < writes.length; offset += 450) {
+    const batch = getDb().batch();
+    writes.slice(offset, offset + 450).forEach(write => write.type === 'delete' ? batch.delete(write.ref) : batch.set(write.ref, write.data, { merge: true }));
+    await batch.commit();
+  }
+}
+
 const actions = {
+  completeRelationshipSetup: (uid, _token, data) => completeRelationshipSetup(uid, data),
+  createLiveSession: (uid, _token, data) => createLiveSession(uid, data),
+  joinLiveSession: (uid, _token, data) => joinLiveSession(uid, data),
+  heartbeatLiveSession: (uid, _token, data) => heartbeatLiveSession(uid, data),
+  saveAssignmentFeedback: (uid, _token, data) => saveAssignmentFeedback(uid, data),
   provisionProfile: (uid, token, data) => provisionProfile(uid, token, data),
   requestPartnerLink: (uid, _token, data) => requestPartnerLink(uid, data),
   listPendingInvites: uid => listPendingInvites(uid),

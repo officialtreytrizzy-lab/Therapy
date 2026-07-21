@@ -1,45 +1,28 @@
-const STORAGE_KEY = 'us-for-real-preview-v3';
+const STORAGE_KEY = 'us-for-real-user-v4';
+const LEGACY_STORAGE_KEYS = ['us-for-real-preview-v3'];
 const now = () => new Date().toISOString();
 const daysFromNow = n => new Date(Date.now() + n * 86400000).toISOString();
 const defaultState = {
-  profile:{displayName:'Trey',pronouns:'he/him',tone:'direct',onboarded:true},
-  connectionScore:78, weeklyStreak:4,
-  sessions:[
-    {id:101,type:'talk_it_out',status:'completed',topic:'Feeling unheard after a long week',intensity:6,createdAt:daysFromNow(-6),summary:'What we heard\nBoth partners were carrying stress and interpreting distance as rejection.\n\nCommon ground\nBoth want more reassurance and less guessing.\n\nAgreed next steps\nUse a 10-minute evening check-in three times this week.'},
-    {id:102,type:'weekly_meeting',status:'active',topic:'Planning the week together',intensity:3,createdAt:daysFromNow(-1),summary:''},
-    {id:103,type:'private_coaching',status:'completed',topic:'How to ask for more affection',intensity:4,createdAt:daysFromNow(-3),summary:'You identified that your request is about reassurance, not control. Try naming the feeling, the need, and one specific action.'}
-  ],
-  messages:{
-    102:[
-      {role:'guide',content:'Welcome to your Weekly Meeting. We’ll move through appreciation, logistics, pressure points, and one shared priority. Who wants to begin with one thing that felt good between you this week?',time:daysFromNow(-1)},
-      {role:'user',content:'I appreciated how he checked on me before my meeting.',label:'Trey',time:daysFromNow(-1)},
-      {role:'guide',content:'That sounds specific and meaningful. Before we move on, what did that check-in communicate to you emotionally?',time:daysFromNow(-1)}
-    ]
+  profile:{displayName:'',partnerName:'',pronouns:'',tone:'direct',onboarded:false},
+  connectionScore:null,
+  weeklyStreak:0,
+  sessions:[],
+  messages:{},
+  goals:[],
+  agreements:[],
+  memories:[],
+  appreciations:[],
+  missions:{
+    active:null,
+    available:[
+      {id:1,title:'The 5-Minute Check-in',description:'For 7 days, ask each other: How are you, really?',category:'Connection',difficulty:'easy'},
+      {id:3,title:'One New Thing Together',description:'Try one thing neither of you has done before.',category:'Adventure',difficulty:'easy'},
+      {id:4,title:'The Phone-Free Evening',description:'Spend at least two uninterrupted hours together.',category:'Presence',difficulty:'medium'},
+      {id:5,title:'Letters to Each Other',description:'Write what has been difficult to say out loud, then exchange.',category:'Depth',difficulty:'medium'},
+      {id:6,title:'The Listening Challenge',description:'Reflect what you heard before sharing your own view.',category:'Communication',difficulty:'challenging'}
+    ],
+    completed:[]
   },
-  goals:[
-    {id:1,title:'Plan a weekend away',description:'Choose dates, budget, and location together.',category:'Quality Time',progress:55,status:'active',targetDate:daysFromNow(32)},
-    {id:2,title:'Weekly money check-in',description:'Review spending without blame every Sunday.',category:'Finances',progress:75,status:'active',targetDate:daysFromNow(18)}
-  ],
-  agreements:[
-    {id:1,title:'Pause before escalation',terms:'Either partner can call a 20-minute pause. We name when we will return to the conversation.',status:'active',reviewDate:daysFromNow(21)},
-    {id:2,title:'No serious conflict by text',terms:'We can signal that something is wrong, but the full conversation happens by phone or in person.',status:'active',reviewDate:daysFromNow(45)}
-  ],
-  memories:[
-    {id:1,title:'Reassurance during stress',content:'Trey tends to need direct reassurance when work stress makes communication shorter.',scope:'shared',category:'Emotional Needs',sensitivity:'medium'},
-    {id:2,title:'Sunday reset',content:'A quiet Sunday dinner helps both partners reconnect before the week.',scope:'shared',category:'Rituals',sensitivity:'low'},
-    {id:3,title:'Private reflection preference',content:'When upset, I need a little time to organize my thoughts before speaking.',scope:'private',category:'Communication',sensitivity:'medium'}
-  ],
-  appreciations:[
-    {id:1,message:'I appreciate how you made room for me to vent without trying to fix everything.',delivery:'instant',createdAt:daysFromNow(-2)},
-    {id:2,message:'You have been carrying a lot and still showing up for us. I see that.',delivery:'end_of_week',createdAt:daysFromNow(-5)}
-  ],
-  missions:{active:{id:2,title:'Appreciation Streak',description:'Send one specific appreciation every day this week.',category:'Appreciation',difficulty:'easy',progress:57},available:[
-    {id:1,title:'The 5-Minute Check-in',description:'For 7 days, ask each other: How are you, really?',category:'Connection',difficulty:'easy'},
-    {id:3,title:'One New Thing Together',description:'Try one thing neither of you has done before.',category:'Adventure',difficulty:'easy'},
-    {id:4,title:'The Phone-Free Evening',description:'Spend at least two uninterrupted hours together.',category:'Presence',difficulty:'medium'},
-    {id:5,title:'Letters to Each Other',description:'Write what has been difficult to say out loud, then exchange.',category:'Depth',difficulty:'medium'},
-    {id:6,title:'The Listening Challenge',description:'Reflect what you heard before sharing your own view.',category:'Communication',difficulty:'challenging'}
-  ],completed:[{id:10,title:'Shared Playlist',description:'Built a relationship playlist together.',category:'Joy',difficulty:'easy',progress:100}]},
   decks:[
     {id:1,title:'Joy & Laughter',category:'Joy',description:'Rediscover what makes both of you genuinely happy.',count:8,intensity:'Light'},
     {id:2,title:'Love & Affection',category:'Love',description:'Explore how you give and receive love.',count:8,intensity:'Medium'},
@@ -52,15 +35,19 @@ const defaultState = {
     {id:9,title:'Intimacy & Touch',category:'Intimacy',description:'How you connect physically and emotionally.',count:6,intensity:'Intimate'}
   ],
   deckAnswers:{},
-  checkins:[{mood:7,connection:8,date:daysFromNow(-1)},{mood:8,connection:7,date:daysFromNow(-3)},{mood:6,connection:7,date:daysFromNow(-5)}]
+  checkins:[],
+  privateTasks:[],
+  gameResponses:[],
+  cloudSessions:[],
+  dataVersion:4
 };
 let state = loadState();
 let currentTab = {};
-function loadState(){try{return {...structuredClone(defaultState),...JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}')}}catch{return structuredClone(defaultState)}}
+function loadState(){for(const key of LEGACY_STORAGE_KEYS)localStorage.removeItem(key);try{const stored=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}');return {...structuredClone(defaultState),...stored,profile:{...defaultState.profile,...(stored.profile||{})},missions:{...defaultState.missions,...(stored.missions||{})}}}catch{return structuredClone(defaultState)}}
 function save(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}
 function escapeHtml(v=''){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function dateShort(v){return new Date(v).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}
-function sessionName(t){return ({talk_it_out:'Talk It Out',speaker_listener:'Speaker & Listener',cool_down:'Cool Down',repair:'Repair After Argument',decision_room:'Decision Room',weekly_meeting:'Weekly Meeting',private_coaching:'Private Reflection',discovery:'Discovery Session'})[t]||t}
+function sessionName(t){return ({talk_it_out:'Talk It Out',speaker_listener:'Speaker & Listener',cool_down:'Cool Down',repair:'Repair After Argument',decision_room:'Decision Room',weekly_meeting:'Weekly Meeting',private_coaching:'Private Reflection',discovery:'Discovery Session',custom_session:'Custom Session',live_session:'Live Couple Session'})[t]||t}
 function icon(n){return `<span class="nav-icon">${n}</span>`}
 function toast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('show');clearTimeout(window.__toastTimer);window.__toastTimer=setTimeout(()=>el.classList.remove('show'),2400)}
 function navigate(path){history.pushState({},'',path);render();window.scrollTo({top:0,behavior:'smooth'})}

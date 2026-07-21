@@ -1,120 +1,153 @@
-﻿# US, FOR REAL — Firebase Identity, Couple Linking, and Guide Dossier
+# US, FOR REAL — Firebase Relationship Architecture
 
-## Production services
+## Identity and linking
 
-- Firebase project: `us-for-real-therapy`
-- Firebase Authentication: passwordless email-link sign-in
-- Cloud Firestore: account, couple, progress, and dossier records
-- Vercel project: `couple-wellness`
-- Production URL: `https://couple-wellness.vercel.app`
-- Trusted server operations: Vercel Function `/api/firebase-account`
-- Google authorization: Vercel OIDC workload-identity federation; no service-account private key is stored
+Every Firebase Authentication account is provisioned with a permanent random 8-digit `memberCode`.
 
-The Firebase project remains on the Spark plan. Billing-dependent Firebase Cloud Functions are not required for the account and relationship system.
+A new member must complete relationship setup:
 
-## Account model
+- **Solo:** keeps an individual account with no couple record.
+- **Partner on the app:** enters the partner's 8-digit code and creates a pending invitation.
 
-Every Firebase Authentication account receives a permanent random 8-digit `memberCode`. This is the public number used for partner linking. It is separate from the Firebase UID and does not expose the member's email.
+The profiles are not linked until the invited member accepts. Acceptance atomically creates one `couples/{coupleId}` record, adds both membership records, and updates both user profiles. The two people retain independent Firebase accounts and devices.
 
-A new account starts with `relationshipStatus: "solo"`. A member can stay solo indefinitely or enter another member's exact 8-digit code. The receiving member must accept the request before the profiles become a couple.
+## Data-source policy
 
-The acceptance operation runs inside a trusted Firestore transaction. It verifies that both accounts exist, neither account is already linked, and a member is not linking to himself. It then creates one couple document, two membership documents, updates both profiles, and closes the invite atomically.
+The application starts empty. It contains no seeded relationship facts, sample scores, sample sessions, or assumed personal details.
 
-## Main Firestore paths
+Data is classified by source:
 
-```text
-users/{uid}
-users/{uid}/privateMemories/{memoryId}
-memberDirectory/{8-digit-memberCode}
-partnerInvites/{inviteId}
-couples/{coupleId}
-couples/{coupleId}/members/{uid}
-couples/{coupleId}/sessions/{sessionId}
-couples/{coupleId}/sessions/{sessionId}/messages/{messageId}
-couples/{coupleId}/goals/{goalId}
-couples/{coupleId}/agreements/{agreementId}
-couples/{coupleId}/sharedMemories/{memoryId}
-couples/{coupleId}/timeline/{eventId}
-couples/{coupleId}/guide/dossier
-```
+- `user-input`: direct information entered by a member.
+- `shared-session`: content deliberately entered during a joint live session.
+- `ai-generated`: Guide responses and session plans.
+- `ai-derived`: temporary sanitized themes used for middleman prompts.
+- `shared-metadata` / `private-metadata-only`: audit events that an interaction occurred without exposing private wording.
 
-The `memberDirectory` collection is server-only. Firestore rules prevent clients from searching it or resolving a code to a Firebase UID.
+Direct current user input is always primary. AI-derived information is a revisable hypothesis and expires unless later supported by new activity.
 
-## Living Couple Guide Dossier
+## Private member space
 
-`couples/{coupleId}/guide/dossier` stores:
+Private content is stored under the member who created it:
 
-- `structured`: normalized JSON for context selection and programmatic checks.
-- `markdown`: a readable living couple formulation for the Guide prompt.
+- `users/{uid}/privateInteractions`
+- `users/{uid}/secretAssignments`
+- `users/{uid}/bridgePrompts`
 
-The dossier covers:
+The other member cannot read these collections. Firestore Security Rules restrict reads to the owning UID and all writes to trusted server APIs.
 
-- member names and anniversary
-- where and how the couple met
-- first date and first impressions
-- favorite memories
-- strengths, shared values, rituals, and hopes
-- current relationship priorities
-- active goals and agreements
-- recent shared memories
-- recent session summaries, progress signals, and concerns
+Private interactions include check-ins, reflections, game answers, individual exercises, task progress, and assignment reflections.
 
-The browser client watches the app's relationship state. When shared sessions, goals, agreements, or shared memories change, it sends a bounded, sanitized snapshot to the trusted Vercel endpoint. The endpoint replaces the corresponding couple subcollections and immediately regenerates the dossier. Private coaching sessions and private memories are excluded from this shared sync.
+## Middleman behavior
 
-## Guide context rules
+The Guide may convert a useful private theme into a neutral prompt for the partner. It may not:
 
-Before generating a relationship response, the Guide should load context in this order:
+- quote or closely paraphrase the private response;
+- identify the partner as the source;
+- hint that the partner complained;
+- reveal a private assignment;
+- encourage surveillance, tests, deception, or manipulation.
 
-1. Current lesson module, active speaker, and recent direct turns
-2. Safety state and whether joint facilitation is appropriate
-3. Current user's personal intake and explicitly consented private context
-4. The living Couple Guide Dossier
-5. Relevant active goals, agreements, shared memories, and recent session evidence
-6. The unfinished exercise or agreed next step
+Bridge prompts are stored only under the target member, carry an `ai-derived` label, and expire after 90 days. They are excluded from the shared couple dossier.
 
-The Guide must:
+## Shared couple space
 
-- treat the dossier as revisable evidence, not unquestionable truth
-- let current direct statements override stale notes
-- label and verify inferences
-- never reveal one partner's private reflection to the other
-- avoid diagnosis and mind-reading
-- preserve equal dignity without forcing equal responsibility
-- use progress and setback history without shaming either partner
+Shared couple data lives below `couples/{coupleId}`:
 
-## Trusted server actions
+- `members`
+- `liveSessions`
+- `goals`
+- `agreements`
+- `interactionLedger`
+- `guide/dossier`
 
-`POST /api/firebase-account` accepts a verified Firebase ID token and one of these actions:
+The interaction ledger records deliberate in-app activity and sanitized metadata. The application does not collect unrelated device activity, background location, contacts, messages, browsing, or other surveillance data.
 
-- `provisionProfile`
-- `requestPartnerLink`
-- `listPendingInvites`
-- `respondToPartnerInvite`
-- `savePersonalIntake`
-- `saveCoupleIntake`
-- `syncRelationshipState`
-- `getGuideContext`
+## Live remote sessions
 
-Firebase ID tokens are verified with Google's rotating Secure Token certificates using Node's built-in RSA verifier. Firestore server access uses short-lived Google credentials exchanged from Vercel's signed OIDC token.
+A live session can last 30, 45, 60, 75, or 90 minutes. Both members can join from different locations.
 
-## Security boundaries
+`couples/{coupleId}/liveSessions/{sessionId}` stores:
 
-- No Firebase Admin private key is committed or stored in Vercel.
-- Google workload identity is restricted to the exact Vercel production principal:
-  `owner:v-ideo-e-dit:project:couple-wellness:environment:production`
-- Only the two linked UIDs can read a couple's shared data.
-- Private memories remain owner-only.
-- Partner-link requests require explicit acceptance.
-- Public web configuration contains only Firebase's normal browser-safe identifiers.
-- Firestore rules and indexes are deployed from `firestore.rules` and `firestore.indexes.json`.
+- custom or selected topic;
+- scenario and desired outcome;
+- emotional intensity and safety intake;
+- synchronized participant readiness;
+- structured Guide plan;
+- session phase and resolution status;
+- start/end time and duration ceiling;
+- educational therapy-cost estimate.
 
-## Local verification
+Subcollections:
 
-```bash
-npm install
-npm run check
-npx firebase-tools deploy --only firestore:rules,firestore:indexes --project us-for-real-therapy
-vercel --prod
-```
+- `turns`: shared member and Guide turns;
+- `presence`: last-seen state and current module;
+- `sharedHomework`: activities both people may view.
 
-The production end-to-end test verified two real temporary Firebase users, permanent member IDs, invite delivery, acceptance, atomic couple creation, intake storage, relationship-state synchronization, and dossier retrieval. Temporary Auth and Firestore records were deleted after the test.
+The timer begins when both members are ready. The client sends a presence heartbeat every 15 seconds during an active session.
+
+## Guide context order
+
+The Guide evaluates context in this order:
+
+1. current topic and current direct input;
+2. current shared-session turns;
+3. relevant direct shared intake;
+4. recent shared-session evidence, active goals, and agreements;
+5. the current user's own private context;
+6. sanitized prompts specifically addressed to the current user.
+
+Historical context informs safety, patterns, relevance, and follow-up. It does not predetermine the answer to the current issue.
+
+## Accountability and resolution
+
+The Guide is instructed to be fair without forcing equal blame. When direct evidence supports it, the Guide should respectfully say that an approach is unfair, controlling, deceptive, dismissive, unsafe, or unreasonable, explain why, distinguish intention from impact, and offer a better alternative.
+
+A valid session conclusion can be:
+
+- resolved;
+- partially resolved;
+- paused with a concrete next step;
+- redirected to safety or outside professional support.
+
+The Guide must never invent agreement merely to report a resolution.
+
+## Session completion
+
+At completion, the Guide generates:
+
+- honest resolution status and summary;
+- unresolved items;
+- fairness/accountability notes;
+- shared homework;
+- one private assignment for each member;
+- a neutral future observation question for the other member;
+- follow-up topic;
+- estimated private-practice cost equivalent.
+
+The default educational rate range is configurable through Vercel environment variables and currently uses $150–$400 per hour. This display is an estimate, not a charge or claim that the application provided licensed therapy.
+
+## Living Guide dossier
+
+`couples/{coupleId}/guide/dossier` contains Markdown and structured JSON. It includes only:
+
+- direct shared couple intake;
+- active user-entered goals and agreements;
+- completed shared-session evidence;
+- sanitized interaction metadata.
+
+It excludes:
+
+- private raw answers;
+- secret assignments;
+- partner bridge prompts;
+- empty placeholder fields;
+- stale demo content;
+- unsupported AI assumptions.
+
+## Infrastructure
+
+- Firebase Authentication: passwordless email-link accounts.
+- Cloud Firestore: identity, private member records, shared couple records, and real-time sessions.
+- Vercel Functions: trusted account transactions and Guide endpoints.
+- Google Vertex AI: Gemini session planning, live facilitation, private coaching, and completion summaries.
+- Google authentication: Vercel OIDC workload identity; no permanent service-account key is stored.
