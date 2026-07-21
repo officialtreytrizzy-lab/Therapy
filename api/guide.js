@@ -109,7 +109,8 @@ async function planSession(uid, data) {
   await purgeExpired(ctx.coupleRef);
   const result = await gemini(
     GUIDE_STANDARD,
-    `Build a serious progressive couple-session plan around the current topic. The plan may last ${ctx.session.durationLimitMinutes} minutes, but must adapt to safety and progress. Return JSON with title, objective, safetyGate, openingPrompt, resolutionTargets array, likelyChallenges array, and modules array of 6-10 objects with id, title, purpose, prompt, exercise, completionSignal.\n\nCONTEXT:\n${contextSummary(ctx)}`,
+    `Build a serious progressive couple-session plan around the current topic. The plan may last ${ctx.session.durationLimitMinutes} minutes, but must adapt to safety and progress. Return JSON with title, objective, safetyGate, openingPrompt, resolutionTargets array, likelyChallenges array, and modules array of 6-10 concise objects with id, title, purpose, prompt, exercise, completionSignal.\n\nCONTEXT:\n${contextSummary(ctx)}`,
+    3200,
   );
   await ctx.sessionRef.set({ plan: result, phase: 'planned', updatedAt: FieldValue.serverTimestamp() }, { merge: true });
   return result;
@@ -215,7 +216,7 @@ async function completeSession(uid, data) {
   const result = await gemini(
     GUIDE_STANDARD,
     `Close this session honestly. Return JSON with resolutionStatus (resolved, partial, paused, unsafe), resolutionSummary, unresolved array, sharedHomework array of objects with title, instructions, dueDays, secretAssignments array with memberUid, assignment, internalReason, partnerObservationQuestion, fairnessNotes array, followUpTopic. Include exactly one safe secret assignment per member. A partner observation question must not reveal that an assignment existed.\n\nCONTEXT:\n${contextSummary(ctx)}`,
-    2400,
+    3600,
   );
 
   const startedMs = ctx.session.startedAt?.toMillis?.() || Date.now();

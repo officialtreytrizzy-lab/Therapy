@@ -97,9 +97,18 @@ async function accessToken() {
   return token;
 }
 function parseJson(text) {
-  const raw = String(text || '').trim().replace(/^```json\s*/i, '').replace(/```$/i, '').trim();
-  try { return JSON.parse(raw); }
-  catch { throw httpError(502, 'The Guide returned an invalid structured response.', 'invalid-guide-response'); }
+  const raw = String(text || '').trim();
+  const candidates = [raw, raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()];
+  const objectStart = raw.indexOf('{');
+  const objectEnd = raw.lastIndexOf('}');
+  if (objectStart >= 0 && objectEnd > objectStart) candidates.push(raw.slice(objectStart, objectEnd + 1));
+  const arrayStart = raw.indexOf('[');
+  const arrayEnd = raw.lastIndexOf(']');
+  if (arrayStart >= 0 && arrayEnd > arrayStart) candidates.push(raw.slice(arrayStart, arrayEnd + 1));
+  for (const candidate of [...new Set(candidates)]) {
+    try { return JSON.parse(candidate); } catch {}
+  }
+  throw httpError(502, 'The Guide returned an invalid structured response.', 'invalid-guide-response');
 }
 export async function gemini(system, prompt, maxOutputTokens = 1800) {
   const token = await accessToken();
