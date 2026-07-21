@@ -116,6 +116,30 @@ async function planSession(uid, data) {
   return result;
 }
 
+function explicitAccountabilityFallback(message) {
+  const value = String(message || '').toLowerCase();
+  const firstPersonAdmission = /\b(i|we)\b/.test(value);
+  if (!firstPersonAdmission) return '';
+  if ((/private (messages?|phone|account|conversation)/.test(value) || /read (his|her|their) messages/.test(value)) && /(without permission|without consent|crossed .*privacy|wanted proof)/.test(value)) {
+    return 'That was not fair. Reading a partner’s private messages without permission violates their privacy; being in a relationship does not remove the need for consent. A fair alternative is to name the concern directly, ask for an honest conversation, and agree on a clear privacy boundary.';
+  }
+  if (/\b(i|we) (lied|deceived|threatened|hit|shoved|forced|humiliated)\b/.test(value)) {
+    return 'That approach was not fair or safe. Understanding the feeling behind it does not excuse the behavior. The next step is direct accountability, stopping the behavior, addressing its impact, and choosing a safer alternative.';
+  }
+  return '';
+}
+
+async function accountabilityAudit(ctx, newestMessage, draft) {
+  const fallback = explicitAccountabilityFallback(newestMessage);
+  if (fallback) return { requiresCorrection: true, correction: fallback };
+  const audit = await gemini(
+    GUIDE_STANDARD,
+    `Audit only the newest direct statement and the shared session evidence for a fairness/accountability issue. Do not infer motives or diagnose. Return JSON with requiresCorrection boolean and correction string. Set requiresCorrection true only when direct evidence shows conduct or an expectation that is unfair, controlling, deceptive, dismissive, coercive, violating consent/privacy, or unsafe. When true, correction must begin with “That was not fair,” “That approach is not reasonable,” or “That behavior is not safe,” then explain why and give one concrete alternative. Draft response: \n${JSON.stringify(draft)}\nNewest statement: \n${newestMessage}\nShared context: \n${contextSummary(ctx)}`,
+    1200,
+  );
+  return { requiresCorrection: audit.requiresCorrection === true, correction: clean(audit.correction, 1400) };
+}
+
 async function respond(uid, data) {
   const sessionId = clean(data.sessionId, 100);
   const message = clean(data.message, 6000);
@@ -128,7 +152,15 @@ async function respond(uid, data) {
     GUIDE_STANDARD,
     `Respond to the newest shared-session turn. Return JSON with message, phase, directAccountability string or empty, probeQuestion one question or empty, exercise object or null, safetyFlag boolean, resolutionMovement string. If someone is wrong or unfair based on direct evidence, state it respectfully and explain the better alternative.\n\nCONTEXT:\n${contextSummary(ctx)}`,
   );
-  await ctx.sessionRef.collection('turns').add({ role: 'guide', speakerName: 'Guide', content: clean(result.message, 6000), phase: clean(result.phase, 80), directAccountability: clean(result.directAccountability, 1000), source: 'ai-generated', createdAt: FieldValue.serverTimestamp() });
+  const audit = await accountabilityAudit(ctx, message, result);
+  if (audit.requiresCorrection && audit.correction) {
+    result.directAccountability = audit.correction;
+    const existing = clean(result.message, 6000);
+    if (!existing.toLowerCase().includes(audit.correction.toLowerCase().slice(0, 36))) {
+      result.message = `${audit.correction}\n\n${existing}`.trim();
+    }
+  }
+  await ctx.sessionRef.collection('turns').add({ role: 'guide', speakerName: 'Guide', content: clean(result.message, 6000), phase: clean(result.phase, 80), directAccountability: clean(result.directAccountability, 1400), source: 'ai-generated', createdAt: FieldValue.serverTimestamp() });
   await ctx.sessionRef.set({ phase: clean(result.phase, 80) || ctx.session.phase, safetyFlag: result.safetyFlag === true, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
   await writeLedger(ctx.coupleRef, { eventType: 'shared-session-turn', actorUid: uid, sessionId, visibility: 'shared', source: 'user-input', summary: `Shared session turn by ${speaker}` });
   return result;
