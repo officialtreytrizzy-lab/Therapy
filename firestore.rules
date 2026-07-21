@@ -1,0 +1,140 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function userPath(uid) {
+      return /databases/$(database)/documents/users/$(uid);
+    }
+
+    function userData() {
+      return get(userPath(request.auth.uid)).data;
+    }
+
+    function isSelf(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    function isCoupleMember(coupleId) {
+      return signedIn()
+        && exists(/databases/$(database)/documents/couples/$(coupleId))
+        && request.auth.uid in get(/databases/$(database)/documents/couples/$(coupleId)).data.memberUids;
+    }
+
+    function onlySafeProfileFieldsChanged() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'displayName',
+        'pronouns',
+        'photoURL',
+        'personalIntake',
+        'onboardingComplete',
+        'updatedAt'
+      ]);
+    }
+
+    function immutableCoupleIdentity() {
+      return request.resource.data.memberUids == resource.data.memberUids
+        && request.resource.data.status == resource.data.status
+        && request.resource.data.createdAt == resource.data.createdAt;
+    }
+
+    match /users/{uid} {
+      allow read: if isSelf(uid);
+      allow create: if false;
+      allow update: if isSelf(uid) && onlySafeProfileFieldsChanged();
+      allow delete: if false;
+
+      match /privateMemories/{memoryId} {
+        allow read, create, update, delete: if isSelf(uid);
+      }
+    }
+
+    match /memberDirectory/{memberCode} {
+      allow read, write: if false;
+    }
+
+    match /partnerInvites/{inviteId} {
+      allow read: if signedIn()
+        && (resource.data.fromUid == request.auth.uid || resource.data.toUid == request.auth.uid);
+      allow write: if false;
+    }
+
+    match /couples/{coupleId} {
+      allow read: if isCoupleMember(coupleId);
+      allow create, delete: if false;
+      allow update: if isCoupleMember(coupleId)
+        && immutableCoupleIdentity()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'anniversary',
+          'story',
+          'strengths',
+          'sharedValues',
+          'rituals',
+          'hopes',
+          'currentPriorities',
+          'intakeVersion',
+          'intakeUpdatedBy',
+          'updatedAt'
+        ]);
+
+      match /members/{uid} {
+        allow read: if isCoupleMember(coupleId);
+        allow write: if false;
+      }
+
+      match /guide/{documentId} {
+        allow read: if isCoupleMember(coupleId);
+        allow write: if false;
+      }
+
+      match /sessions/{sessionId} {
+        allow read: if isCoupleMember(coupleId);
+        allow create: if isCoupleMember(coupleId)
+          && request.resource.data.createdBy == request.auth.uid;
+        allow update: if isCoupleMember(coupleId)
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdAt == resource.data.createdAt;
+        allow delete: if false;
+
+        match /messages/{messageId} {
+          allow read: if isCoupleMember(coupleId);
+          allow create: if isCoupleMember(coupleId)
+            && request.resource.data.authorUid == request.auth.uid;
+          allow update, delete: if false;
+        }
+      }
+
+      match /goals/{goalId} {
+        allow read: if isCoupleMember(coupleId);
+        allow create: if isCoupleMember(coupleId)
+          && request.resource.data.createdBy == request.auth.uid;
+        allow update, delete: if isCoupleMember(coupleId);
+      }
+
+      match /agreements/{agreementId} {
+        allow read: if isCoupleMember(coupleId);
+        allow create: if isCoupleMember(coupleId)
+          && request.resource.data.createdBy == request.auth.uid;
+        allow update, delete: if isCoupleMember(coupleId);
+      }
+
+      match /sharedMemories/{memoryId} {
+        allow read: if isCoupleMember(coupleId);
+        allow create: if isCoupleMember(coupleId)
+          && request.resource.data.createdBy == request.auth.uid;
+        allow update, delete: if isCoupleMember(coupleId);
+      }
+
+      match /timeline/{eventId} {
+        allow read: if isCoupleMember(coupleId);
+        allow write: if false;
+      }
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
