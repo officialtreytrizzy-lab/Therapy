@@ -773,6 +773,17 @@ async function upsertOwnedCollection(coupleRef, collectionName, uid, items) {
   }
 }
 
+async function refreshGuideDossier(uid) {
+  const userSnap = await getDb().doc(`users/${uid}`).get();
+  const coupleId = userSnap.data()?.coupleId;
+  if (!coupleId) throw httpError(409, 'Link a partner before refreshing couple context.', 'couple-required');
+  const coupleSnap = await getDb().doc(`couples/${coupleId}`).get();
+  if (!coupleSnap.exists || !coupleSnap.data().memberUids?.includes(uid)) throw httpError(403, 'Couple access denied.', 'forbidden');
+  await rebuildDossier(coupleId);
+  const dossier = await getDb().doc(`couples/${coupleId}/guide/dossier`).get();
+  return { coupleId, dossier: dossier.exists ? dossier.data() : null };
+}
+
 const actions = {
   completeRelationshipSetup: (uid, _token, data) => completeRelationshipSetup(uid, data),
   createLiveSession: (uid, _token, data) => createLiveSession(uid, data),
