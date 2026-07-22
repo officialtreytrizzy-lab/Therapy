@@ -17,7 +17,7 @@ test('shared history deletion requires both-member confirmation', () => {
 });
 
 test('email-link fallback never uses a temporary preview hostname', () => {
-  assert.match(client, /AUTH_CONTINUE_URL='https:\/\/couple-wellness\.vercel\.app\/dashboard'/);
+  assert.match(client, /AUTH_CONTINUE_URL='https:\/\/couple-wellness-v-ideo-e-dit\.vercel\.app\/dashboard'/);
   assert.match(client, /url:AUTH_CONTINUE_URL/);
   assert.doesNotMatch(client, /url:location\.origin\+'\/dashboard'/);
 });
