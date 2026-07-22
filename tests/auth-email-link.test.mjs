@@ -5,6 +5,7 @@ import { emailSenderConfigured, normalizeEmail, renderSignInEmail } from '../api
 
 const accountSource = fs.readFileSync('api/firebase-account.js', 'utf8');
 const clientSource = fs.readFileSync('public/firebase-client.js', 'utf8');
+const serverSource = fs.readFileSync('api/auth-email-link.js', 'utf8');
 
 test('custom sign-in sender normalizes email and requires SMTP credentials', () => {
   assert.equal(normalizeEmail('  Person@Example.COM '), 'person@example.com');
@@ -34,4 +35,10 @@ test('post-authentication screen exposes and copies the member ID before relatio
   assert.match(clientSource, /copy-member-code/);
   assert.match(clientSource, /navigator\.clipboard\.writeText\(code\)/);
   assert.match(clientSource, /auth-email-link/);
+});
+
+test('server and client share the verified production continuation domain', () => {
+  assert.match(serverSource, /https:\/\/couple-wellness-v-ideo-e-dit\.vercel\.app/);
+  assert.match(clientSource, /https:\/\/couple-wellness-v-ideo-e-dit\.vercel\.app\/dashboard/);
+  assert.doesNotMatch(serverSource, /https:\/\/couple-wellness\.vercel\.app/);
 });
