@@ -7,8 +7,14 @@
     "api/guide.js": {
       "maxDuration": 60
     },
+    "api/guide-route.js": {
+      "maxDuration": 60
+    },
     "api/firebase-account.js": {
       "maxDuration": 30
+    },
+    "api/firebase-account-route.js": {
+      "maxDuration": 60
     },
     "api/auth-email-link.js": {
       "maxDuration": 30
@@ -73,7 +79,7 @@
     },
     {
       "source": "/api/firebase-account",
-      "destination": "/api/firebase-account.js"
+      "destination": "/api/firebase-account-route.js"
     },
     {
       "source": "/api/deletion-worker",
@@ -81,7 +87,7 @@
     },
     {
       "source": "/api/guide",
-      "destination": "/api/guide.js"
+      "destination": "/api/guide-route.js"
     },
     {
       "source": "/(.*)",

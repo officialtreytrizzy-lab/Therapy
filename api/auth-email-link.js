@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { PROJECT_ID, db, getGoogleAccessToken, runWithGoogle } from './_guide-core.js';
 import { correlationId, enforceRateLimit, redactedLog } from './security.js';
 
-const APP_URL = String(process.env.APP_URL || 'https://couple-wellness.vercel.app').replace(/\/+$/, '');
+const APP_URL = String(process.env.APP_URL || 'https://couple-wellness-v-ideo-e-dit.vercel.app').replace(/\/+$/, '');
 const AUTH_CONTINUE_URL = process.env.AUTH_CONTINUE_URL || `${APP_URL}/dashboard`;
 const SMTP_HOST = process.env.SMTP_HOST || 'smtp.ionos.com';
 const SMTP_PORT = Number(process.env.SMTP_PORT || 465);
