@@ -17,7 +17,7 @@ jobs:
       # references resolve (see scripts/build.mjs), then runs the behavioral tests.
       - run: npm run build
       - name: Run behavioral tests
-        id: behavioral-tests
+        id: tests
         continue-on-error: true
         shell: bash
         run: |
@@ -34,9 +34,9 @@ jobs:
           path: test-output.txt
           retention-days: 1
       - run: npm audit --omit=dev --audit-level=high
-        if: steps.behavioral-tests.outcome == 'success'
+        if: steps.tests.outcome == 'success'
       - name: Fail when behavioral tests fail
-        if: steps.behavioral-tests.outcome == 'failure'
+        if: steps.tests.outcome == 'failure'
         run: |
           cat test-output.txt
           exit 1
