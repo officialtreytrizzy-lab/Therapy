@@ -19,6 +19,12 @@ test('calibrator requires three reasons for both perspectives', () => {
   assert.match(source, /reasonCount\(calibration\.theirReasons\)!==3/);
 });
 
+test('calibrator exposes timed work phases outside the completed-state branch', () => {
+  assert.ok(source.includes("</button></div></section></main>`);}const self=phase==='self'"));
+  assert.match(source, /function updateCalibratorButton\(\)/);
+  assert.match(source, /window\.startConflictCalibration=/);
+});
+
 test('one-minute self-side timeout produces a cool-off bias warning', () => {
   assert.match(source, /60-Math\.floor/);
   assert.match(source, /creating a bias that makes the full situation harder to see/);
