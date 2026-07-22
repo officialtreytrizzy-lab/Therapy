@@ -700,6 +700,38 @@ async function requireCouple(uid) {
   return { user, coupleId: user.coupleId, coupleRef, couple: coupleSnap.data() };
 }
 
+async function requireSessionWorkspace(uid, requestedScope = 'solo') {
+  const userRef = getDb().doc(`users/${uid}`);
+  const userSnap = await userRef.get();
+  const user = userSnap.data();
+  if (!user) throw httpError(404, 'Your member profile was not found.', 'profile-not-found');
+
+  const scope = requestedScope === 'couple' ? 'couple' : 'solo';
+  if (scope === 'couple') {
+    const couple = await requireCouple(uid);
+    return {
+      ...couple,
+      scope,
+      ownerUid: null,
+      containerRef: couple.coupleRef,
+      sessionCollection: couple.coupleRef.collection('liveSessions'),
+      memberUids: couple.couple.memberUids || [],
+    };
+  }
+
+  return {
+    user,
+    coupleId: null,
+    coupleRef: null,
+    couple: null,
+    scope,
+    ownerUid: uid,
+    containerRef: userRef,
+    sessionCollection: userRef.collection('guidedSessions'),
+    memberUids: [uid],
+  };
+}
+
 function safeMinutes(value) {
   const minutes = Number(value);
   if (![30, 45, 60, 75, 90].includes(minutes)) return 60;
@@ -721,19 +753,44 @@ async function writeInteractionLedger(coupleRef, event) {
   return ref.id;
 }
 
+async function writeSessionLedger(workspace, event) {
+  if (workspace.scope === 'couple') return writeInteractionLedger(workspace.coupleRef, event);
+  const ref = workspace.containerRef.collection('interactionLedger').doc();
+  await ref.set({
+    eventType: clean(event.eventType, 80),
+    actorUid: event.actorUid || workspace.ownerUid,
+    sessionId: event.sessionId || null,
+    source: event.source || 'user-input',
+    visibility: 'owner-only',
+    summary: clean(event.summary, 500),
+    metadata: event.metadata && typeof event.metadata === 'object' ? event.metadata : {},
+    createdAt: FieldValue.serverTimestamp(),
+  });
+  return ref.id;
+}
+
 async function createLiveSession(uid, data) {
   await enforceRateLimit(getDb(), `session:user:${uid}`, 12, 86400);
-  const { coupleId, coupleRef, couple } = await requireCouple(uid);
+  const requestedScope = data.scope === 'couple' ? 'couple' : 'solo';
+  const workspace = await requireSessionWorkspace(uid, requestedScope);
   const topic = clean(data.topic, 500);
   const scenario = clean(data.scenario, 3000);
   const desiredOutcome = clean(data.desiredOutcome, 1000);
   if (!topic) throw httpError(400, 'Describe the topic for this session.', 'topic-required');
   const type = clean(data.type, 80) || 'custom_session';
   const durationLimitMinutes = safeMinutes(data.durationLimitMinutes);
-  const ref = coupleRef.collection('liveSessions').doc();
+  const ref = workspace.sessionCollection.doc();
+  const solo = workspace.scope === 'solo';
+  const participantStatus = Object.fromEntries(workspace.memberUids.map(memberUid => [
+    memberUid,
+    solo || memberUid === uid ? 'ready' : 'invited',
+  ]));
   const session = {
-    coupleId,
-    memberUids: couple.memberUids,
+    scope: workspace.scope,
+    visibility: solo ? 'owner-only' : 'shared-couple',
+    ownerUid: solo ? uid : null,
+    coupleId: workspace.coupleId,
+    memberUids: workspace.memberUids,
     createdBy: uid,
     type,
     custom: type === 'custom_session',
@@ -742,12 +799,12 @@ async function createLiveSession(uid, data) {
     desiredOutcome,
     emotionalIntensity: Math.max(1, Math.min(10, Number(data.emotionalIntensity) || 5)),
     safetyConcern: clean(data.safetyConcern, 120),
-    status: 'waiting',
+    status: solo ? 'active' : 'waiting',
     phase: 'intake',
     resolutionStatus: 'not-started',
     durationLimitMinutes,
     maxDurationSeconds: durationLimitMinutes * 60,
-    participantStatus: Object.fromEntries((couple.memberUids || []).map(memberUid => [memberUid, memberUid === uid ? 'ready' : 'invited'])),
+    participantStatus,
     startedAt: null,
     endedAt: null,
     createdAt: FieldValue.serverTimestamp(),
@@ -755,39 +812,50 @@ async function createLiveSession(uid, data) {
     estimatedRateMinUsd: 150,
     estimatedRateMaxUsd: 400,
   };
-  await ref.create(session);
-  await writeInteractionLedger(coupleRef, {
-    eventType: 'live-session-created', actorUid: uid, sessionId: ref.id,
-    summary: topic, metadata: { type, durationLimitMinutes },
+  await ref.create({
+    ...session,
+    startedAt: solo ? FieldValue.serverTimestamp() : null,
   });
-  return { id: ref.id, ...session };
+  await writeSessionLedger(workspace, {
+    eventType: solo ? 'solo-guided-session-created' : 'live-session-created',
+    actorUid: uid,
+    sessionId: ref.id,
+    summary: topic,
+    metadata: { type, durationLimitMinutes, scope: workspace.scope },
+  });
+  return {
+    id: ref.id,
+    ...session,
+    startedAt: solo ? new Date().toISOString() : null,
+  };
 }
 
 async function joinLiveSession(uid, data) {
-  const { coupleRef, couple } = await requireCouple(uid);
+  const workspace = await requireSessionWorkspace(uid, data.scope === 'couple' ? 'couple' : 'solo');
   const sessionId = clean(data.sessionId, 100);
-  const ref = coupleRef.collection('liveSessions').doc(sessionId);
+  const ref = workspace.sessionCollection.doc(sessionId);
   return getDb().runTransaction(async transaction => {
     const snap = await transaction.get(ref);
     if (!snap.exists) throw httpError(404, 'Session not found.', 'session-not-found');
     const session = snap.data();
     if (!session.memberUids?.includes(uid)) throw httpError(403, 'Session access denied.', 'forbidden');
     const status = { ...(session.participantStatus || {}), [uid]: 'ready' };
-    const allReady = (couple.memberUids || []).every(memberUid => status[memberUid] === 'ready');
+    const allReady = (session.memberUids || []).every(memberUid => status[memberUid] === 'ready');
+    const activate = allReady && session.status === 'waiting';
     transaction.update(ref, {
       participantStatus: status,
-      status: allReady && session.status === 'waiting' ? 'active' : session.status,
-      startedAt: allReady && !session.startedAt ? FieldValue.serverTimestamp() : session.startedAt,
+      status: activate ? 'active' : session.status,
+      startedAt: activate && !session.startedAt ? FieldValue.serverTimestamp() : session.startedAt,
       updatedAt: FieldValue.serverTimestamp(),
     });
-    return { id: sessionId, allReady, status: allReady ? 'active' : session.status };
+    return { id: sessionId, scope: workspace.scope, allReady, status: activate ? 'active' : session.status };
   });
 }
 
 async function heartbeatLiveSession(uid, data) {
-  const { coupleRef } = await requireCouple(uid);
+  const workspace = await requireSessionWorkspace(uid, data.scope === 'couple' ? 'couple' : 'solo');
   const sessionId = clean(data.sessionId, 100);
-  const sessionRef = coupleRef.collection('liveSessions').doc(sessionId);
+  const sessionRef = workspace.sessionCollection.doc(sessionId);
   const snap = await sessionRef.get();
   if (!snap.exists || !snap.data().memberUids?.includes(uid)) throw httpError(404, 'Session not found.', 'session-not-found');
   await sessionRef.collection('presence').doc(uid).set({
@@ -796,7 +864,7 @@ async function heartbeatLiveSession(uid, data) {
     currentModule: clean(data.currentModule, 80),
     lastSeenAt: FieldValue.serverTimestamp(),
   }, { merge: true });
-  return { ok: true };
+  return { ok: true, scope: workspace.scope };
 }
 
 async function saveAssignmentFeedback(uid, data) {
@@ -862,12 +930,14 @@ async function exportMyData(uid) {
   const userSnap = await getDb().doc(`users/${uid}`).get();
   if (!userSnap.exists) throw httpError(404, 'Your member profile was not found.', 'profile-not-found');
   const user = userSnap.data();
-  const [privateInteractions, assignments, bridgePrompts, privateMemories, exercises] = await Promise.all([
+  const [privateInteractions, assignments, bridgePrompts, privateMemories, exercises, guidedSessions, privateLedger] = await Promise.all([
     getDb().collection(`users/${uid}/privateInteractions`).limit(500).get(),
     getDb().collection(`users/${uid}/secretAssignments`).limit(500).get(),
     getDb().collection(`users/${uid}/bridgePrompts`).limit(500).get(),
     getDb().collection(`users/${uid}/privateMemories`).limit(500).get(),
     getDb().collection(`users/${uid}/cloudExercises`).limit(500).get(),
+    getDb().collection(`users/${uid}/guidedSessions`).limit(200).get(),
+    getDb().collection(`users/${uid}/interactionLedger`).limit(500).get(),
   ]);
   let shared = null;
   if (user.coupleId) {
@@ -885,7 +955,7 @@ async function exportMyData(uid) {
     }
   }
   await audit(getDb(), { eventType: 'data-export-created', actorUid: uid, correlationId: oidcContext.getStore()?.correlationId });
-  return { exportedAt: new Date().toISOString(), private: { profile: user, privateInteractions: privateInteractions.docs.map(d => ({ id: d.id, ...d.data() })), secretAssignments: assignments.docs.map(d => ({ id: d.id, ...d.data() })), bridgePrompts: bridgePrompts.docs.map(d => ({ id: d.id, ...d.data() })), privateMemories: privateMemories.docs.map(d => ({ id: d.id, ...d.data() })), cloudExercises: exercises.docs.map(d => ({ id: d.id, ...d.data() })) }, shared };
+  return { exportedAt: new Date().toISOString(), private: { profile: user, privateInteractions: privateInteractions.docs.map(d => ({ id: d.id, ...d.data() })), secretAssignments: assignments.docs.map(d => ({ id: d.id, ...d.data() })), bridgePrompts: bridgePrompts.docs.map(d => ({ id: d.id, ...d.data() })), privateMemories: privateMemories.docs.map(d => ({ id: d.id, ...d.data() })), cloudExercises: exercises.docs.map(d => ({ id: d.id, ...d.data() })), guidedSessions: guidedSessions.docs.map(d => ({ id: d.id, ...d.data() })), interactionLedger: privateLedger.docs.map(d => ({ id: d.id, ...d.data() })) }, shared };
 }
 
 async function deleteFirestoreDocDeep(ref, subcollections) {
@@ -942,7 +1012,8 @@ async function eraseAccount(uid) {
   }
 
   // Erase private owner-only subcollections and the profile document.
-  await deleteFirestoreDocDeep(userRef, ['privateInteractions', 'secretAssignments', 'bridgePrompts', 'privateMemories', 'cloudExercises', 'blockList']);
+  await deleteCollectionDeep(userRef, ['guidedSessions']);
+  await deleteFirestoreDocDeep(userRef, ['privateInteractions', 'secretAssignments', 'bridgePrompts', 'privateMemories', 'cloudExercises', 'interactionLedger', 'blockList']);
 
   await deleteFirebaseAuthUser(uid).catch(error => {
     // Record but do not abort: a stuck Auth deletion is retried on the next run.

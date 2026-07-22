@@ -17,6 +17,7 @@ PRIVACY
 - Never quote, closely paraphrase, attribute, hint at, or expose a partner's private answer.
 - Partner-derived bridge prompts are sanitized themes only. Treat them as hypotheses, not facts.
 - Shared live-session turns are visible to both participants.
+- Solo guided-session turns are owner-only and must never be surfaced to a future linked partner.
 
 FAIRNESS AND ACCOUNTABILITY
 - Be fair without forcing 50/50 blame.
@@ -52,37 +53,57 @@ async function userAndCouple(uid) {
   return { user, coupleId: user.coupleId, couple: coupleSnap.data(), coupleRef };
 }
 
-async function sessionContext(uid, sessionId) {
+async function sessionContext(uid, sessionId, requestedScope = 'solo') {
   const base = await userAndCouple(uid);
-  if (!base.coupleRef) throw httpError(409, 'Link a partner before starting a joint session.', 'couple-required');
-  const sessionRef = base.coupleRef.collection('liveSessions').doc(sessionId);
+  const scope = requestedScope === 'couple' ? 'couple' : 'solo';
+  if (scope === 'couple' && !base.coupleRef) {
+    throw httpError(409, 'Connect a partner before starting a shared session.', 'couple-required');
+  }
+
+  const ownerRef = db().doc(`users/${uid}`);
+  const sessionRef = scope === 'couple'
+    ? base.coupleRef.collection('liveSessions').doc(sessionId)
+    : ownerRef.collection('guidedSessions').doc(sessionId);
   const sessionSnap = await sessionRef.get();
-  if (!sessionSnap.exists || !sessionSnap.data().memberUids?.includes(uid)) throw httpError(404, 'Session not found.', 'session-not-found');
-  const [dossierSnap, turnsSnap, privateSnap, promptSnap, membersSnap] = await Promise.all([
-    base.coupleRef.collection('guide').doc('dossier').get(),
+  const session = sessionSnap.data();
+  const allowed = scope === 'couple'
+    ? session?.memberUids?.includes(uid)
+    : session?.ownerUid === uid || session?.memberUids?.includes(uid);
+  if (!sessionSnap.exists || !allowed) throw httpError(404, 'Session not found.', 'session-not-found');
+
+  const [contextSnap, turnsSnap, privateSnap, promptSnap, membersSnap] = await Promise.all([
+    scope === 'couple' ? base.coupleRef.collection('guide').doc('dossier').get() : ownerRef.get(),
     sessionRef.collection('turns').orderBy('createdAt', 'asc').limit(80).get(),
     db().collection(`users/${uid}/privateInteractions`).orderBy('createdAt', 'desc').limit(12).get(),
     db().collection(`users/${uid}/bridgePrompts`).orderBy('createdAt', 'desc').limit(12).get(),
-    base.coupleRef.collection('members').get(),
+    scope === 'couple' ? base.coupleRef.collection('members').get() : Promise.resolve(null),
   ]);
   const now = Date.now();
   const bridgePrompts = promptSnap.docs
     .map(doc => ({ id: doc.id, ...doc.data() }))
     .filter(item => !item.expiresAt?.toMillis || item.expiresAt.toMillis() > now);
+  const soloMember = { uid, displayName: base.user.displayName || 'Member', role: 'member' };
   return {
     ...base,
+    scope,
+    solo: scope === 'solo',
+    ownerRef,
+    ledgerRef: scope === 'couple' ? base.coupleRef : ownerRef,
     sessionRef,
-    session: { id: sessionId, ...sessionSnap.data() },
-    dossier: dossierSnap.data()?.structured || {},
+    session: { id: sessionId, ...session },
+    dossier: scope === 'couple' ? (contextSnap.data()?.structured || {}) : { personalIntake: contextSnap.data()?.personalIntake || {} },
     turns: turnsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })),
     ownPrivate: privateSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })),
-    bridgePrompts,
-    members: membersSnap.docs.map(doc => doc.data()),
+    bridgePrompts: scope === 'couple' ? bridgePrompts : [],
+    members: scope === 'couple' ? membersSnap.docs.map(doc => doc.data()) : [soloMember],
+    memberUids: scope === 'couple' ? (base.couple?.memberUids || []) : [uid],
+    couple: scope === 'couple' ? base.couple : { memberUids: [uid] },
   };
 }
 
 function contextSummary(ctx) {
   return JSON.stringify({
+    sessionScope: ctx.scope,
     session: {
       type: ctx.session.type,
       topic: ctx.session.topic,
@@ -92,15 +113,18 @@ function contextSummary(ctx) {
       safetyConcern: ctx.session.safetyConcern,
       plan: ctx.session.plan || null,
     },
-    sharedDossier: ctx.dossier,
+    relationshipContext: ctx.dossier,
     currentUserPrivateContext: ctx.ownPrivate.map(item => ({ type: item.type, userInput: item.content })),
     sanitizedPromptsForCurrentUser: ctx.bridgePrompts.map(item => ({ theme: item.theme, prompt: item.prompt, exercise: item.suggestedExercise, confidence: item.confidence })),
-    sharedTurns: ctx.turns.map(turn => ({ role: turn.role, speakerName: turn.speakerName, content: turn.content })),
+    sessionTurns: ctx.turns.map(turn => ({ role: turn.role, speakerName: turn.speakerName, content: turn.content })),
+    soloPerspectiveRule: ctx.solo
+      ? 'The other person is not participating. Any possible perspective must be clearly labeled as a hypothesis, never presented as their actual thought or intent.'
+      : null,
   });
 }
 
-async function writeLedger(coupleRef, event) {
-  await coupleRef.collection('interactionLedger').add({
+async function writeLedger(containerRef, event) {
+  await containerRef.collection('interactionLedger').add({
     eventType: clean(event.eventType, 80),
     actorUid: event.actorUid || null,
     sessionId: event.sessionId || null,
@@ -120,25 +144,34 @@ async function purgeExpired(coupleRef) {
 }
 
 function fallbackPlan(ctx) {
+  const solo = ctx.solo === true;
   const safetyGate = ctx.session.safetyConcern && ctx.session.safetyConcern !== 'none'
-    ? 'Clarify immediate safety and whether joint work is appropriate before discussing the dispute.'
-    : 'Confirm both members can participate without intimidation, interruption, or retaliation.';
+    ? solo
+      ? 'Clarify immediate safety, identify trusted human support, and avoid advice that could increase danger or retaliation.'
+      : 'Clarify immediate safety and whether joint work is appropriate before discussing the dispute.'
+    : solo
+      ? 'Confirm you are regulated enough to reflect without acting impulsively, and pause if the situation involves fear, coercion, or violence.'
+      : 'Confirm both members can participate without intimidation, interruption, or retaliation.';
   const modules = [
-    ['arrive','Arrive and regulate','Lower activation before analysis.','Rate intensity from 1–10 and name what would help you stay present.','90-second grounding and readiness check.','Both members can listen and choose words deliberately.'],
-    ['facts','Establish the facts','Separate observable events from interpretations.','What would a camera or message log confirm happened?','Facts-versus-story worksheet.','Each member can state the event without assigning motive.'],
-    ['perspective-a','First perspective','Hear one member fully without rebuttal.','What did this moment mean to you, and what did it affect?','Two-minute protected turn and reflection.','The listener can summarize accurately.'],
-    ['perspective-b','Second perspective','Hear the other member under the same conditions.','What did you experience, intend, fear, or need?','Switch roles and mirror.','The first speaker can summarize accurately.'],
-    ['cycle','Map the interaction cycle','Identify how each protective move triggers the next.','What usually happens immediately before and after this pattern?','Trigger → reaction → meaning → counterreaction map.','Both recognize the cycle without false equal blame.'],
-    ['accountability','Name fairness and impact','Identify what was unfair, harmful, avoidant, or reasonable based on direct evidence.','What responsibility belongs to each person, and what does not?','Intent-impact-accountability review.','Responsibility is specific and supported by evidence.'],
-    ['repair','Build a repair or decision','Turn understanding into a concrete boundary, request, repair, or choice.','What specific action would make the next occurrence meaningfully different?','Impact-accountability-repair or needs-options-tradeoffs.','A realistic next step is stated and voluntarily accepted.'],
-    ['follow-up','Homework and follow-up','Protect progress after the session.','What will each person practice, and when will you review it?','One-week experiment and confidence check.','The plan is observable, time-bounded, and safe.'],
+    ['arrive','Arrive and regulate','Lower activation before analysis.','Rate intensity from 1–10 and name what would help you stay present.','90-second grounding and readiness check.',solo?'You can think deliberately instead of reacting from peak activation.':'Both members can listen and choose words deliberately.'],
+    ['facts','Establish the facts','Separate observable events from interpretations.','What would a camera, message log, or neutral witness confirm happened?','Facts-versus-story worksheet.',solo?'You can distinguish direct evidence from assumptions about the other person.':'Each member can state the event without assigning motive.'],
+    ['perspective-a',solo?'Your perspective':'First perspective',solo?'Name your experience without turning interpretation into fact.':'Hear one member fully without rebuttal.',solo?'What did this moment mean to you, and what did it affect?':'What did this moment mean to you, and what did it affect?',solo?'Protected reflection with impact and need labels.':'Two-minute protected turn and reflection.',solo?'Your impact, meaning, and need are specific.':'The listener can summarize accurately.'],
+    ['perspective-b',solo?'Test another possible perspective':'Second perspective',solo?'Build the strongest plausible alternative without pretending to know the other person’s mind.':'Hear the other member under the same conditions.',solo?'What is one fair explanation that could also fit the facts, and what evidence would confirm or disprove it?':'What did you experience, intend, fear, or need?',solo?'Hypothesis-and-evidence check.':'Switch roles and mirror.',solo?'Possible perspectives are labeled as hypotheses, not facts.':'The first speaker can summarize accurately.'],
+    ['cycle','Map the interaction cycle','Identify how each protective move may trigger the next.','What usually happens immediately before and after this pattern?','Trigger → reaction → meaning → counterreaction map.',solo?'You can identify your part of the cycle and the points you can control.':'Both recognize the cycle without false equal blame.'],
+    ['accountability','Name fairness and impact','Identify what was unfair, harmful, avoidant, or reasonable based on direct evidence.','What responsibility belongs to you, what may belong to the other person, and what remains unknown?','Intent-impact-accountability review.','Responsibility is specific, evidence-based, and does not rely on mind-reading.'],
+    ['repair','Build a repair or decision','Turn understanding into a concrete boundary, request, repair, or choice.','What specific action under your control would make the next occurrence meaningfully different?','Impact-accountability-repair or needs-options-tradeoffs.','A realistic next step is observable, voluntary, and safe.'],
+    ['follow-up','Practice and follow-up','Protect progress after the session.','What will you practice, what evidence will show whether it helped, and when will you review it?','One-week behavior experiment and confidence check.','The plan is observable, time-bounded, and safe.'],
   ].map(([id,title,purpose,prompt,exercise,completionSignal])=>({id,title,purpose,prompt,exercise,completionSignal}));
   return {
-    title: ctx.session.topic || 'Guided Couple Session',
-    objective: ctx.session.desiredOutcome || 'Reach a truthful understanding and a concrete next step.',
+    title: ctx.session.topic || (solo ? 'Private Guided Relationship Session' : 'Guided Couple Session'),
+    objective: ctx.session.desiredOutcome || (solo ? 'Reach personal clarity and choose one evidence-based next step.' : 'Reach a truthful understanding and a concrete next step.'),
     safetyGate,
-    openingPrompt: 'Before deciding who is right, name your current intensity and the one outcome you most need from this conversation.',
-    resolutionTargets: ['Clarify the direct facts','Understand each perspective','Name supported accountability','Create a safe next step'],
+    openingPrompt: solo
+      ? 'Before deciding what the other person meant, name your current intensity, the observable facts, and the outcome you need.'
+      : 'Before deciding who is right, name your current intensity and the one outcome you most need from this conversation.',
+    resolutionTargets: solo
+      ? ['Clarify direct facts','Separate impact from assumptions','Identify supported accountability','Choose one measurable next step']
+      : ['Clarify the direct facts','Understand each perspective','Name supported accountability','Create a safe next step'],
     likelyChallenges: ['Defensiveness','Mind-reading','Debating intent before acknowledging impact'],
     modules,
     generationStatus: 'structured-fallback',
@@ -148,12 +181,20 @@ function fallbackPlan(ctx) {
 function fallbackResponse(ctx, newestMessage) {
   const correction = explicitAccountabilityFallback(newestMessage);
   const observation = clean(newestMessage, 700);
+  const solo = ctx.solo === true;
+  const probeQuestion = correction
+    ? 'What would taking responsibility look like without defending the behavior?'
+    : solo
+      ? 'What impact might your action have had, and what evidence supports that possibility?'
+      : 'What impact do you believe your action had on your partner?';
   return {
-    message: correction || `I hear that this is the position you are bringing into the room. Before the other person responds, separate the observable event from the conclusion you drew from it. In the moment you described, what impact do you believe your action had on your partner?`,
+    message: correction || (solo
+      ? 'I hear the position you are bringing into this private room. Separate the observable event from the conclusion you drew from it, then treat any explanation of the other person’s motives as a hypothesis. What impact might your action have had, and what evidence supports that possibility?'
+      : 'I hear that this is the position you are bringing into the room. Before the other person responds, separate the observable event from the conclusion you drew from it. In the moment you described, what impact do you believe your action had on your partner?'),
     phase: correction ? 'accountability' : 'clarify',
     directAccountability: correction,
-    probeQuestion: correction ? 'What would taking responsibility look like without defending the behavior?' : 'What impact do you believe your action had on your partner?',
-    exercise: { name: 'facts-impact-request', steps: ['Name the observable action','Name the impact','Name one fair alternative'] },
+    probeQuestion,
+    exercise: { name: 'facts-impact-request', steps: ['Name the observable action','Name the supported or possible impact','Name one fair alternative'] },
     safetyFlag: /threat|violence|afraid|forced|coerc/i.test(observation),
     resolutionMovement: 'Clarify impact and supported responsibility.',
     generationStatus: 'structured-fallback',
@@ -171,33 +212,48 @@ function fallbackPrivateCoach(content) {
 }
 
 function fallbackCompletion(ctx) {
-  const memberUids = ctx.couple.memberUids || [];
+  const memberUids = ctx.memberUids || [];
+  const solo = ctx.solo === true;
   return {
     resolutionStatus: 'partial',
-    resolutionSummary: 'The session established the issue, each perspective, and the need for a concrete follow-up. A final resolution should not be claimed until both members confirm that the proposed boundary or repair is realistic and has been followed in practice.',
-    unresolved: ['Confirm the exact repair or boundary in observable language','Review follow-through at the next check-in'],
-    sharedHomework: [{ title: 'One-week repair experiment', instructions: 'Each member completes the specific action agreed in the session and records what helped or interfered. Review it together within seven days.', dueDays: 7 }],
+    resolutionSummary: solo
+      ? 'The session clarified the issue, separated direct evidence from assumptions, and identified a personal next step. It does not claim agreement or reveal what the other person thinks. Review the result after the behavior experiment or after a direct conversation provides new evidence.'
+      : 'The session established the issue, each perspective, and the need for a concrete follow-up. A final resolution should not be claimed until both members confirm that the proposed boundary or repair is realistic and has been followed in practice.',
+    unresolved: solo
+      ? ['Test the chosen action in a real interaction','Update any assumptions when direct evidence becomes available']
+      : ['Confirm the exact repair or boundary in observable language','Review follow-through at the next check-in'],
+    sharedHomework: [{
+      title: solo ? 'One-week relationship experiment' : 'One-week repair experiment',
+      instructions: solo
+        ? 'Complete the specific action you chose, record what actually happened, and compare the outcome with your original prediction within seven days.'
+        : 'Each member completes the specific action agreed in the session and records what helped or interfered. Review it together within seven days.',
+      dueDays: 7,
+    }],
     secretAssignments: memberUids.map((memberUid,index)=>({
       memberUid,
-      assignment: index===0 ? 'Practice one direct request without explaining your partner’s motive.' : 'Practice reflecting one concern fully before defending your intention.',
+      assignment: solo
+        ? 'Practice one direct request or boundary that describes observable behavior without assigning motive.'
+        : index===0
+          ? 'Practice one direct request without explaining your partner’s motive.'
+          : 'Practice reflecting one concern fully before defending your intention.',
       internalReason: 'Reinforce the communication skill identified in the session.',
-      partnerObservationQuestion: 'What positive or difficult change did you notice in your partner’s communication this week?',
+      partnerObservationQuestion: solo ? '' : 'What positive or difficult change did you notice in your partner’s communication this week?',
     })),
     fairnessNotes: [],
-    followUpTopic: ctx.session.topic || 'Review the repair experiment',
+    followUpTopic: ctx.session.topic || (solo ? 'Review the relationship experiment' : 'Review the repair experiment'),
     generationStatus: 'structured-fallback',
   };
 }
 
 async function planSession(uid, data) {
   await enforceRateLimit(db(), `guide-plan:user:${uid}`, 30, 3600);
-  const ctx = await sessionContext(uid, clean(data.sessionId, 100));
-  await purgeExpired(ctx.coupleRef);
+  const ctx = await sessionContext(uid, clean(data.sessionId, 100), clean(data.scope, 20));
+  if (!ctx.solo) await purgeExpired(ctx.coupleRef);
   let result;
   try {
     const generated = await gemini(
       GUIDE_STANDARD,
-      `Build a serious progressive couple-session plan around the current topic. The plan may last ${ctx.session.durationLimitMinutes} minutes, but must adapt to safety and progress. Return JSON with title, objective, safetyGate, openingPrompt, resolutionTargets array, likelyChallenges array, and modules array of 6-10 concise objects with id, title, purpose, prompt, exercise, completionSignal.\n\nCONTEXT:\n${contextSummary(ctx)}`,
+      `${ctx.solo ? 'Build a serious progressive owner-only guided session for one person who is in a relationship. The absent person is not a participant; possible perspectives must remain labeled hypotheses.' : 'Build a serious progressive couple-session plan around the current topic.'} The plan may last ${ctx.session.durationLimitMinutes} minutes, but must adapt to safety and progress. Return JSON with title, objective, safetyGate, openingPrompt, resolutionTargets array, likelyChallenges array, and modules array of 6-10 concise objects with id, title, purpose, prompt, exercise, completionSignal.\n\nCONTEXT:\n${contextSummary(ctx)}`,
       3200,
     );
     const validated = validatePlan(generated);
@@ -240,16 +296,16 @@ async function respond(uid, data) {
   const sessionId = clean(data.sessionId, 100);
   const message = clean(data.message, 6000);
   if (!message) throw httpError(400, 'Enter a response.', 'message-required');
-  const ctx = await sessionContext(uid, sessionId);
+  const ctx = await sessionContext(uid, sessionId, clean(data.scope, 20));
   if (ctx.session.status === 'completed') throw httpError(409, 'This session is already complete.', 'session-complete');
-  const speaker = ctx.members.find(member => member.uid === uid)?.displayName || ctx.user.displayName || 'Partner';
+  const speaker = ctx.members.find(member => member.uid === uid)?.displayName || ctx.user.displayName || 'Member';
   await ctx.sessionRef.collection('turns').add({ role: 'user', authorUid: uid, speakerName: speaker, content: message, source: 'user-input', createdAt: FieldValue.serverTimestamp() });
   ctx.turns.push({ role: 'user', speakerName: speaker, content: message });
   let result;
   try {
     const generated = await gemini(
       GUIDE_STANDARD,
-      `Respond to the newest shared-session turn. Return JSON with message, phase, directAccountability string or empty, probeQuestion one question or empty, exercise object or null, safetyFlag boolean, resolutionMovement string. If someone is wrong or unfair based on direct evidence, state it respectfully and explain the better alternative.\n\nCONTEXT:\n${contextSummary(ctx)}`,
+      `${ctx.solo ? 'Respond to the newest owner-only guided-session turn. Do not pretend to know the absent person’s thoughts; label possible perspectives as hypotheses.' : 'Respond to the newest shared-session turn.'} Return JSON with message, phase, directAccountability string or empty, probeQuestion one question or empty, exercise object or null, safetyFlag boolean, resolutionMovement string. If someone is wrong or unfair based on direct evidence, state it respectfully and explain the better alternative.\n\nCONTEXT:\n${contextSummary(ctx)}`,
     );
     const validated = validateResponse(generated);
     result = validated.ok ? validated.value : fallbackResponse(ctx, message);
@@ -268,7 +324,7 @@ async function respond(uid, data) {
   }
   await ctx.sessionRef.collection('turns').add({ role: 'guide', speakerName: 'Guide', content: clean(result.message, 6000), phase: clean(result.phase, 80), directAccountability: clean(result.directAccountability, 1400), source: 'ai-generated', promptVersion: PROMPT_VERSION, createdAt: FieldValue.serverTimestamp() });
   await ctx.sessionRef.set({ phase: clean(result.phase, 80) || ctx.session.phase, safetyFlag: result.safetyFlag === true, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
-  await writeLedger(ctx.coupleRef, { eventType: 'shared-session-turn', actorUid: uid, sessionId, visibility: 'shared', source: 'user-input', summary: `Shared session turn by ${speaker}` });
+  await writeLedger(ctx.ledgerRef, { eventType: ctx.solo ? 'solo-guided-session-turn' : 'shared-session-turn', actorUid: uid, sessionId, visibility: ctx.solo ? 'owner-only' : 'shared', source: 'user-input', summary: `${ctx.solo ? 'Private guided' : 'Shared'} session turn by ${speaker}` });
   return result;
 }
 
@@ -392,7 +448,7 @@ async function existingCompletion(ctx, sessionId) {
 async function completeSession(uid, data) {
   await enforceRateLimit(db(), `guide-complete:user:${uid}`, 20, 3600);
   const sessionId = clean(data.sessionId, 100);
-  const ctx = await sessionContext(uid, sessionId);
+  const ctx = await sessionContext(uid, sessionId, clean(data.scope, 20));
 
   // Idempotency: claim the completion atomically. If the session is already
   // completed or another request is completing it, return the stored result
@@ -413,7 +469,7 @@ async function completeSession(uid, data) {
   try {
     const generated = await gemini(
       GUIDE_STANDARD,
-      `Close this session honestly. Return JSON with resolutionStatus (resolved, partial, paused, unsafe), resolutionSummary, unresolved array, sharedHomework array of objects with title, instructions, dueDays, secretAssignments array with memberUid, assignment, internalReason, partnerObservationQuestion, fairnessNotes array, followUpTopic. Include exactly one safe secret assignment per member. A partner observation question must not reveal that an assignment existed.\n\nCONTEXT:\n${contextSummary(ctx)}`,
+      `${ctx.solo ? 'Close this owner-only guided session honestly. The outcome is a personal clarity and action plan, not a claim about mutual agreement. Any view of the absent person must remain a hypothesis.' : 'Close this shared couple session honestly.'} Return JSON with resolutionStatus (resolved, partial, paused, unsafe), resolutionSummary, unresolved array, sharedHomework array of objects with title, instructions, dueDays, secretAssignments array with memberUid, assignment, internalReason, partnerObservationQuestion, fairnessNotes array, followUpTopic. Include exactly one safe secret assignment per participating member. A partner observation question must not reveal that an assignment existed.\n\nCONTEXT:\n${contextSummary(ctx)}`,
       3600,
     );
     const validated = validateCompletion(generated);
@@ -491,11 +547,11 @@ async function completeSession(uid, data) {
   }
 
   // Deterministic ledger doc ID prevents duplicate completion events on retry.
-  await ctx.coupleRef.collection('interactionLedger').doc(`complete_${sessionId}`).set({
-    eventType: 'live-session-completed',
+  await ctx.ledgerRef.collection('interactionLedger').doc(`complete_${sessionId}`).set({
+    eventType: ctx.solo ? 'solo-guided-session-completed' : 'live-session-completed',
     actorUid: uid,
     sessionId,
-    visibility: 'shared-summary',
+    visibility: ctx.solo ? 'owner-only' : 'shared-summary',
     source: 'session',
     summary: clean(result.resolutionSummary, 500),
     createdAt: FieldValue.serverTimestamp(),
