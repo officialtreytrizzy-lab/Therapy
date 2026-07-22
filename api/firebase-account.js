@@ -170,7 +170,7 @@ async function provisionProfile(uid, token, data) {
       pronouns: clean(data.pronouns || current?.pronouns, 40),
       email: token.email || current?.email || null,
       emailVerified: token.email_verified === true,
-      authProvider: 'email-link',
+      authProvider: clean(token.firebase?.sign_in_provider || 'unknown', 40),
       photoURL: token.picture || current?.photoURL || null,
       relationshipStatus: current?.relationshipStatus || 'solo',
       coupleId: current?.coupleId || null,

@@ -4,8 +4,23 @@
     "indexes": "firestore.indexes.json"
   },
   "emulators": {
-    "auth": { "port": 9099 },
-    "firestore": { "port": 8080 },
-    "ui": { "enabled": true, "port": 4000 }
+    "auth": {
+      "port": 9099
+    },
+    "firestore": {
+      "port": 8080
+    },
+    "ui": {
+      "enabled": true,
+      "port": 4000
+    }
+  },
+  "auth": {
+    "providers": {
+      "googleSignIn": {
+        "oAuthBrandDisplayName": "US, FOR REAL",
+        "supportEmail": "californiatrey@gmail.com"
+      }
+    }
   }
 }

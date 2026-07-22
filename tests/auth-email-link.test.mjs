@@ -24,7 +24,7 @@ test('custom sign-in email explains the member ID handoff', () => {
 test('profile provisioning persists verified email identity and an 8-digit member code', () => {
   assert.match(accountSource, /memberCode: code/);
   assert.match(accountSource, /emailVerified: token\.email_verified === true/);
-  assert.match(accountSource, /authProvider: 'email-link'/);
+  assert.match(accountSource, /authProvider: clean\(token\.firebase\?\.sign_in_provider/);
   assert.match(accountSource, /lastAuthenticatedAt: FieldValue\.serverTimestamp\(\)/);
   assert.match(accountSource, /memberDirectory\/\$\{code\}/);
 });
