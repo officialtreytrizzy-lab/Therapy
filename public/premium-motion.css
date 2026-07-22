@@ -1,0 +1,111 @@
+/* =========================================================================
+   premium-motion.css  ·  Additive polish & motion layer
+   For: us-for-real-couple-wellness ("Therapy")
+   Loads AFTER premium.css / luxury.css / style.css and only ADDS behavior.
+   Reuses existing tokens: --accent, --accent-soft, --radius-*, --safe-*, --ios-blur.
+   Tuned calm & grounded — this is a relationship/therapy space, not a game.
+   All motion is GPU-friendly (opacity/transform only) and reduced-motion aware.
+   ========================================================================= */
+
+:root{
+  /* Calm, confident easing — decelerate into place, no bounce on layout */
+  --pm-ease-calm:  cubic-bezier(.22,.61,.36,1);
+  --pm-ease-inout: cubic-bezier(.6,.04,.2,1);
+  --pm-ease-press: cubic-bezier(.34,1.4,.64,1);
+  --pm-dur-1: 200ms;   /* micro-interactions */
+  --pm-dur-2: 380ms;   /* reveals */
+  --pm-dur-3: 600ms;   /* page enter */
+  --pm-vh: 1vh;        /* JS-maintained fallback for iOS URL-bar height jumps */
+}
+
+/* ---- iOS Safari correctness ------------------------------------------- */
+:focus-visible{ outline:2px solid var(--accent,#63d58d); outline-offset:2px; border-radius:6px; }
+.page,[data-scroll],.scroll{ -webkit-overflow-scrolling:touch; }
+
+/* Full-height helpers that survive the Safari URL-bar collapse.
+   dvh where supported (iOS 27), with the JS --pm-vh fallback underneath. */
+@supports (min-height:100dvh){
+  .app,.shell,.layout,.main-scroll{ min-height:100dvh; }
+}
+
+/* ---- Signature: calm page-enter -------------------------------------- */
+@keyframes pmPageEnter{
+  from{ opacity:0; transform:translate3d(0,10px,0) scale(.994); filter:blur(4px); }
+  to  { opacity:1; transform:none;                       filter:none; }
+}
+main.page.pm-page-enter{
+  animation:pmPageEnter var(--pm-dur-3) var(--pm-ease-calm) both;
+}
+
+/* ---- Scroll reveals (auto-applied by JS, staggered) ------------------ */
+.pm-reveal{ opacity:0; transform:translate3d(0,16px,0); will-change:opacity,transform; }
+.pm-reveal.pm-in{
+  opacity:1; transform:none;
+  transition:opacity var(--pm-dur-2) var(--pm-ease-calm),
+             transform var(--pm-dur-2) var(--pm-ease-calm);
+  transition-delay:calc(var(--pm-i,0) * 55ms);
+}
+
+/* ---- Tactile micro-interactions (transform-only) --------------------- */
+.card,.deck,.session-type,.lesson-card,.choice,.btn,[data-link]{
+  transition:transform var(--pm-dur-1) var(--pm-ease-press),
+             box-shadow var(--pm-dur-1) var(--pm-ease-calm);
+}
+.card:active,.deck:active,.session-type:active,.lesson-card:active,
+.choice:active,.btn:active,[data-link]:active{ transform:scale(.978); }
+
+/* Desktop-only lift; touch devices never fire :hover, so phones stay clean */
+@media (hover:hover) and (pointer:fine){
+  .card:hover,.deck:hover,.session-type:hover,.lesson-card:hover{
+    transform:translate3d(0,-3px,0);
+    box-shadow:0 24px 60px rgba(0,0,0,.28);
+  }
+  .btn:hover{ transform:translate3d(0,-1px,0); }
+}
+
+/* Primary-button sheen — desktop hover only, deliberately faint */
+.btn{ position:relative; overflow:hidden; }
+.btn::after{
+  content:""; position:absolute; inset:0; pointer-events:none;
+  background:linear-gradient(120deg,transparent 34%,rgba(255,255,255,.10) 50%,transparent 66%);
+  transform:translateX(-130%);
+}
+@media (hover:hover) and (pointer:fine){
+  .btn:hover::after{ animation:pmSheen 900ms var(--pm-ease-calm); }
+}
+@keyframes pmSheen{ to{ transform:translateX(130%); } }
+
+/* ---- Press ripple (JS injects .pm-ripple into buttons/choices) ------- */
+.pm-ripple{
+  position:absolute; border-radius:50%; transform:scale(0);
+  pointer-events:none; opacity:.7;
+  background:radial-gradient(circle, var(--accent-soft, rgba(99,213,141,.22)), transparent 70%);
+  animation:pmRipple 620ms var(--pm-ease-calm);
+}
+@keyframes pmRipple{ to{ transform:scale(2.4); opacity:0; } }
+
+/* ---- Calm active-nav accent bar -------------------------------------- */
+.nav a{ position:relative; }
+.nav a::before{
+  content:""; position:absolute; left:5px; top:50%; width:2px; height:0;
+  border-radius:2px; background:var(--accent,#63d58d); opacity:0;
+  transform:translateY(-50%);
+  transition:height var(--pm-dur-2) var(--pm-ease-calm), opacity var(--pm-dur-2);
+}
+.nav a.active::before{ height:56%; opacity:1; }
+
+/* ---- Soft entrance for guide/AI notes as they stream in -------------- */
+.guide-note{ animation:pmPageEnter var(--pm-dur-2) var(--pm-ease-calm) both; }
+
+/* ---- Respect the person's system setting ----------------------------- */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important;
+  }
+  .pm-reveal{ opacity:1 !important; transform:none !important; }
+  main.page.pm-page-enter{ animation:none !important; }
+  .btn::after{ display:none !important; }
+}
