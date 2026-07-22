@@ -25,13 +25,13 @@
   function decorate() {
     document.body.dataset.route = (location.pathname.split('/')[1] || 'landing').replace(/[^a-z0-9-]/gi, '');
     const shell = document.querySelector('.app-shell');
-    if (shell && !document.querySelector('.lux-bottom-nav')) {
+    if (shell && !document.querySelector('.lux-bottom-nav') && !document.querySelector('.premium-tabbar')) {
       shell.insertAdjacentHTML('beforeend', `<nav class="lux-bottom-nav" aria-label="Primary navigation">${navItem('/dashboard', 'Home', 'home')}${navItem('/sessions', 'Sessions', 'sessions')}${navItem('/progress', 'Insights', 'insights')}${navItem('/settings', 'Account', 'account')}</nav>`);
     }
 
     const main = document.querySelector('main.page, main.serious-session, main.hero, .onboarding');
     const needsOrb = routesWithOrb.has(location.pathname) || location.pathname.startsWith('/sessions/');
-    if (main && needsOrb && !main.querySelector(':scope > .lux-orb')) {
+    if (main && needsOrb && !main.classList.contains('experience-page') && !main.querySelector(':scope > .lux-orb')) {
       main.insertAdjacentHTML('afterbegin', '<div class="lux-orb" aria-hidden="true"><i></i><i></i><i></i><span></span></div>');
     }
 
