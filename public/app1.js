@@ -41,10 +41,23 @@ const defaultState = {
   cloudSessions:[],
   dataVersion:4
 };
+// Cross-account privacy: all cached relationship data is namespaced by the signed-in
+// Firebase UID so two people sharing one browser can never see each other's cache,
+// and nothing from a signed-out session can sync into a different account's couple.
+const USFRLocal={
+  uid:null,
+  key(){return `${STORAGE_KEY}::${this.uid||'anon'}`},
+  migrateLegacy(){try{const legacy=localStorage.getItem(STORAGE_KEY);if(legacy!=null){const anonKey=`${STORAGE_KEY}::anon`;if(localStorage.getItem(anonKey)==null)localStorage.setItem(anonKey,legacy);localStorage.removeItem(STORAGE_KEY)}}catch{}},
+  clearAll(){try{for(let i=localStorage.length-1;i>=0;i--){const k=localStorage.key(i);if(k&&(k===STORAGE_KEY||k.startsWith(STORAGE_KEY+'::')))localStorage.removeItem(k)}}catch{}}
+};
+window.USFRLocal=USFRLocal;
 let state = loadState();
 let currentTab = {};
-function loadState(){for(const key of LEGACY_STORAGE_KEYS)localStorage.removeItem(key);try{const stored=JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}');return {...structuredClone(defaultState),...stored,profile:{...defaultState.profile,...(stored.profile||{})},missions:{...defaultState.missions,...(stored.missions||{})}}}catch{return structuredClone(defaultState)}}
-function save(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state))}
+function loadState(){for(const key of LEGACY_STORAGE_KEYS)localStorage.removeItem(key);USFRLocal.migrateLegacy();try{const stored=JSON.parse(localStorage.getItem(USFRLocal.key())||'{}');return {...structuredClone(defaultState),...stored,profile:{...defaultState.profile,...(stored.profile||{})},missions:{...defaultState.missions,...(stored.missions||{})}}}catch{return structuredClone(defaultState)}}
+function save(){localStorage.setItem(USFRLocal.key(),JSON.stringify(state))}
+// Switches the active local bucket when the signed-in user changes. Called by the
+// Firebase client on every auth-state change (including sign-out → null).
+window.__usfrSetActiveUser=function(uid){const next=uid||null;if(USFRLocal.uid===next)return;USFRLocal.uid=next;state=loadState();if(typeof render==='function')render()};
 function escapeHtml(v=''){return String(v).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
 function dateShort(v){return new Date(v).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}
 function sessionName(t){return ({talk_it_out:'Talk It Out',speaker_listener:'Speaker & Listener',cool_down:'Cool Down',repair:'Repair After Argument',decision_room:'Decision Room',weekly_meeting:'Weekly Meeting',private_coaching:'Private Reflection',discovery:'Discovery Session',custom_session:'Custom Session',live_session:'Live Couple Session'})[t]||t}

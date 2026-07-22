@@ -3,7 +3,8 @@
     {"collectionGroup":"partnerInvites","queryScope":"COLLECTION","fields":[{"fieldPath":"toUid","order":"ASCENDING"},{"fieldPath":"status","order":"ASCENDING"},{"fieldPath":"createdAt","order":"DESCENDING"}]},
     {"collectionGroup":"partnerInvites","queryScope":"COLLECTION","fields":[{"fieldPath":"fromUid","order":"ASCENDING"},{"fieldPath":"status","order":"ASCENDING"},{"fieldPath":"createdAt","order":"DESCENDING"}]},
     {"collectionGroup":"systemAuditEvents","queryScope":"COLLECTION","fields":[{"fieldPath":"actorUid","order":"ASCENDING"},{"fieldPath":"createdAt","order":"DESCENDING"}]},
-    {"collectionGroup":"interactionLedger","queryScope":"COLLECTION","fields":[{"fieldPath":"visibility","order":"ASCENDING"},{"fieldPath":"createdAt","order":"DESCENDING"}]}
+    {"collectionGroup":"interactionLedger","queryScope":"COLLECTION","fields":[{"fieldPath":"visibility","order":"ASCENDING"},{"fieldPath":"createdAt","order":"DESCENDING"}]},
+    {"collectionGroup":"deletionRequests","queryScope":"COLLECTION","fields":[{"fieldPath":"status","order":"ASCENDING"},{"fieldPath":"scheduledEraseAfter","order":"ASCENDING"}]}
   ],
   "fieldOverrides": []
 }

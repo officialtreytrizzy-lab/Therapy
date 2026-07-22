@@ -5,7 +5,8 @@ import { Firestore } from '@google-cloud/firestore';
 
 export const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'us-for-real-therapy';
 export const VERTEX_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || PROJECT_ID;
-export const MODEL = process.env.GEMINI_MODEL || 'gemini-3-flash-preview';
+// Default to a production-supported (non-preview) model. Override with GEMINI_MODEL.
+export const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 export const LOCATION = process.env.GOOGLE_CLOUD_LOCATION || 'global';
 const CERTS_URL = 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
 const requestContext = new AsyncLocalStorage();

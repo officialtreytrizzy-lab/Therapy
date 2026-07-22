@@ -1,8 +1,14 @@
 import { FieldValue, Timestamp } from '@google-cloud/firestore';
-import { clean, db, gemini, httpError, requireUser, runWithGoogle } from './_guide-core.js';
+import { clean, db, gemini, getGoogleAccessToken, httpError, requireUser, runWithGoogle } from './_guide-core.js';
+import { enforceRateLimit, FEATURE_FLAGS, verifyAppCheck } from './security.js';
+import { validateCompletion, validatePlan, validatePrivateCoach, validateResponse } from './guide-schema.js';
 
 const RATE_MIN = Number(process.env.COUPLES_THERAPY_RATE_MIN_USD || 150);
 const RATE_MAX = Number(process.env.COUPLES_THERAPY_RATE_MAX_USD || 400);
+
+// Version the Guide prompt/behavior contract so changes can be rolled back and
+// each stored session/turn records which behavior produced it.
+const PROMPT_VERSION = process.env.GUIDE_PROMPT_VERSION || 'guide-2026-07-01';
 
 const GUIDE_STANDARD = `You are the Guide for US, FOR REAL, a therapy-informed relationship-wellness application. Never claim to be a licensed therapist.
 
@@ -25,6 +31,15 @@ FACILITATION
 - Work toward a truthful resolution, partial agreement, safe pause, or explicit next step. Never invent agreement.
 - If there is coercion, intimidation, threats, stalking, sexual violence, or fear, stop ordinary conjoint exercises and prioritize safety.
 - Secret assignments must be constructive, observable, and must never encourage surveillance, testing, deception, manipulation, or boundary violations.`;
+
+// Pure, testable decision for whether a sanitized bridge prompt may be created from
+// a member's private input. Enforces consent and safety server-side (P0 consent gate).
+export function shouldCreateBridgePrompt({ consentAllowed, safetyFlag, signalUseful, targetPrompt }) {
+  return consentAllowed === true
+    && safetyFlag !== true
+    && signalUseful === true
+    && Boolean(String(targetPrompt || '').trim());
+}
 
 async function userAndCouple(uid) {
   const userSnap = await db().doc(`users/${uid}`).get();
@@ -175,20 +190,24 @@ function fallbackCompletion(ctx) {
 }
 
 async function planSession(uid, data) {
+  await enforceRateLimit(db(), `guide-plan:user:${uid}`, 30, 3600);
   const ctx = await sessionContext(uid, clean(data.sessionId, 100));
   await purgeExpired(ctx.coupleRef);
   let result;
   try {
-    result = await gemini(
+    const generated = await gemini(
       GUIDE_STANDARD,
       `Build a serious progressive couple-session plan around the current topic. The plan may last ${ctx.session.durationLimitMinutes} minutes, but must adapt to safety and progress. Return JSON with title, objective, safetyGate, openingPrompt, resolutionTargets array, likelyChallenges array, and modules array of 6-10 concise objects with id, title, purpose, prompt, exercise, completionSignal.\n\nCONTEXT:\n${contextSummary(ctx)}`,
       3200,
     );
+    const validated = validatePlan(generated);
+    result = validated.ok ? validated.value : fallbackPlan(ctx);
+    if (!validated.ok) console.error('Guide plan schema fallback:', validated.errors.join(','));
   } catch (error) {
     console.error('Guide plan fallback:', error.code || error.message);
     result = fallbackPlan(ctx);
   }
-  await ctx.sessionRef.set({ plan: result, phase: 'planned', updatedAt: FieldValue.serverTimestamp() }, { merge: true });
+  await ctx.sessionRef.set({ plan: result, phase: 'planned', promptVersion: PROMPT_VERSION, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
   return result;
 }
 
@@ -217,19 +236,24 @@ async function accountabilityAudit(ctx, newestMessage, draft) {
 }
 
 async function respond(uid, data) {
+  await enforceRateLimit(db(), `guide-respond:user:${uid}`, 120, 3600);
   const sessionId = clean(data.sessionId, 100);
   const message = clean(data.message, 6000);
   if (!message) throw httpError(400, 'Enter a response.', 'message-required');
   const ctx = await sessionContext(uid, sessionId);
+  if (ctx.session.status === 'completed') throw httpError(409, 'This session is already complete.', 'session-complete');
   const speaker = ctx.members.find(member => member.uid === uid)?.displayName || ctx.user.displayName || 'Partner';
   await ctx.sessionRef.collection('turns').add({ role: 'user', authorUid: uid, speakerName: speaker, content: message, source: 'user-input', createdAt: FieldValue.serverTimestamp() });
   ctx.turns.push({ role: 'user', speakerName: speaker, content: message });
   let result;
   try {
-    result = await gemini(
+    const generated = await gemini(
       GUIDE_STANDARD,
       `Respond to the newest shared-session turn. Return JSON with message, phase, directAccountability string or empty, probeQuestion one question or empty, exercise object or null, safetyFlag boolean, resolutionMovement string. If someone is wrong or unfair based on direct evidence, state it respectfully and explain the better alternative.\n\nCONTEXT:\n${contextSummary(ctx)}`,
     );
+    const validated = validateResponse(generated);
+    result = validated.ok ? validated.value : fallbackResponse(ctx, message);
+    if (!validated.ok) console.error('Guide response schema fallback:', validated.errors.join(','));
   } catch (error) {
     console.error('Guide response fallback:', error.code || error.message);
     result = fallbackResponse(ctx, message);
@@ -242,13 +266,14 @@ async function respond(uid, data) {
       result.message = `${audit.correction}\n\n${existing}`.trim();
     }
   }
-  await ctx.sessionRef.collection('turns').add({ role: 'guide', speakerName: 'Guide', content: clean(result.message, 6000), phase: clean(result.phase, 80), directAccountability: clean(result.directAccountability, 1400), source: 'ai-generated', createdAt: FieldValue.serverTimestamp() });
+  await ctx.sessionRef.collection('turns').add({ role: 'guide', speakerName: 'Guide', content: clean(result.message, 6000), phase: clean(result.phase, 80), directAccountability: clean(result.directAccountability, 1400), source: 'ai-generated', promptVersion: PROMPT_VERSION, createdAt: FieldValue.serverTimestamp() });
   await ctx.sessionRef.set({ phase: clean(result.phase, 80) || ctx.session.phase, safetyFlag: result.safetyFlag === true, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
   await writeLedger(ctx.coupleRef, { eventType: 'shared-session-turn', actorUid: uid, sessionId, visibility: 'shared', source: 'user-input', summary: `Shared session turn by ${speaker}` });
   return result;
 }
 
 async function privateCoach(uid, data) {
+  await enforceRateLimit(db(), `guide-coach:user:${uid}`, 60, 3600);
   const content = clean(data.content, 6000);
   if (!content) throw httpError(400, 'Enter a response.', 'content-required');
   const type = clean(data.type, 80) || 'private-reflection';
@@ -266,6 +291,10 @@ async function privateCoach(uid, data) {
   let dossier = {};
   let prompts = [];
   let partnerUid = null;
+  // Consent is enforced server-side: the author of this private input decides
+  // whether any sanitized theme derived from it may influence the partner's
+  // prompts. If they disabled it, no bridge prompt is ever created.
+  const sanitizedPromptInfluenceAllowed = base.user?.consentControls?.sanitizedPromptInfluence !== false;
   if (base.coupleRef) {
     const [dossierSnap, promptSnap] = await Promise.all([
       base.coupleRef.collection('guide').doc('dossier').get(),
@@ -278,10 +307,13 @@ async function privateCoach(uid, data) {
 
   let result;
   try {
-    result = await gemini(
+    const generated = await gemini(
       GUIDE_STANDARD,
       `Privately coach this member. Return JSON with response, themes array, safetyFlag boolean, and bridgeSignal object with useful boolean, theme, targetPrompt, suggestedExercise, confidence from 0 to 1, sensitivity. The bridge signal is for the partner's private experience. It must never quote, closely paraphrase, attribute, or reveal this input. It must be a neutral question or exercise that remains useful without knowing its source.\n\nCURRENT PRIVATE INPUT:\n${content}\n\nSHARED DOSSIER:\n${JSON.stringify(dossier)}\n\nSANITIZED PROMPTS FOR THIS USER:\n${JSON.stringify(prompts)}`,
     );
+    const validated = validatePrivateCoach(generated);
+    result = validated.ok ? validated.value : fallbackPrivateCoach(content);
+    if (!validated.ok) console.error('Private Guide schema fallback:', validated.errors.join(','));
   } catch (error) {
     console.error('Private Guide fallback:', error.code || error.message);
     result = fallbackPrivateCoach(content);
@@ -290,11 +322,21 @@ async function privateCoach(uid, data) {
   await interactionRef.set({
     aiThemes: Array.isArray(result.themes) ? result.themes.slice(0, 8) : [],
     safetyFlag: result.safetyFlag === true,
+    promptVersion: PROMPT_VERSION,
     processedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
 
   const signal = result.bridgeSignal || {};
-  if (base.coupleRef && partnerUid && signal.useful === true && clean(signal.targetPrompt, 1000)) {
+  // Suppress bridge prompts when: the author disabled sanitized prompt influence,
+  // OR this input raised a private safety flag (a safety concern must never be
+  // silently converted into a prompt that surfaces to the other partner).
+  const bridgeAllowed = shouldCreateBridgePrompt({
+    consentAllowed: sanitizedPromptInfluenceAllowed,
+    safetyFlag: result.safetyFlag,
+    signalUseful: signal.useful,
+    targetPrompt: clean(signal.targetPrompt, 1000),
+  });
+  if (bridgeAllowed && base.coupleRef && partnerUid) {
     const expiresAt = Timestamp.fromMillis(Date.now() + 90 * 86400000);
     await db().collection(`users/${partnerUid}/bridgePrompts`).add({
       type: 'middleman-prompt',
@@ -330,16 +372,53 @@ async function privateCoach(uid, data) {
   return { response: result.response, themes: result.themes || [], safetyFlag: result.safetyFlag === true };
 }
 
+// Returns the already-persisted completion payload for a session, so a retry after
+// a client-side failure reports success instead of regenerating side effects.
+async function existingCompletion(ctx, sessionId) {
+  const session = ctx.session;
+  const homeworkSnap = await ctx.sessionRef.collection('sharedHomework').get();
+  return {
+    resolutionStatus: session.resolutionStatus || 'partial',
+    resolutionSummary: session.resolutionSummary || '',
+    unresolved: session.unresolved || [],
+    fairnessNotes: session.fairnessNotes || [],
+    followUpTopic: session.followUpTopic || '',
+    sharedHomework: homeworkSnap.docs.map(doc => doc.data()),
+    costEstimate: session.costEstimate || null,
+    idempotent: true,
+  };
+}
+
 async function completeSession(uid, data) {
+  await enforceRateLimit(db(), `guide-complete:user:${uid}`, 20, 3600);
   const sessionId = clean(data.sessionId, 100);
   const ctx = await sessionContext(uid, sessionId);
+
+  // Idempotency: claim the completion atomically. If the session is already
+  // completed or another request is completing it, return the stored result
+  // instead of generating duplicate homework, assignments, prompts, and ledger.
+  const claim = await db().runTransaction(async tx => {
+    const snap = await tx.get(ctx.sessionRef);
+    const status = snap.data()?.status;
+    if (status === 'completed') return { proceed: false, reason: 'completed' };
+    if (status === 'completing') return { proceed: false, reason: 'in-progress' };
+    tx.update(ctx.sessionRef, { status: 'completing', completionClaimedAt: FieldValue.serverTimestamp(), completionClaimedBy: uid });
+    return { proceed: true };
+  });
+  if (!claim.proceed) {
+    return existingCompletion(ctx, sessionId);
+  }
+
   let result;
   try {
-    result = await gemini(
+    const generated = await gemini(
       GUIDE_STANDARD,
       `Close this session honestly. Return JSON with resolutionStatus (resolved, partial, paused, unsafe), resolutionSummary, unresolved array, sharedHomework array of objects with title, instructions, dueDays, secretAssignments array with memberUid, assignment, internalReason, partnerObservationQuestion, fairnessNotes array, followUpTopic. Include exactly one safe secret assignment per member. A partner observation question must not reveal that an assignment existed.\n\nCONTEXT:\n${contextSummary(ctx)}`,
       3600,
     );
+    const validated = validateCompletion(generated);
+    result = validated.ok ? validated.value : fallbackCompletion(ctx);
+    if (!validated.ok) console.error('Guide completion schema fallback:', validated.errors.join(','));
   } catch (error) {
     console.error('Guide completion fallback:', error.code || error.message);
     result = fallbackCompletion(ctx);
@@ -368,33 +447,37 @@ async function completeSession(uid, data) {
     fairnessNotes: Array.isArray(result.fairnessNotes) ? result.fairnessNotes.slice(0, 10) : [],
     followUpTopic: clean(result.followUpTopic, 1000),
     costEstimate,
+    promptVersion: PROMPT_VERSION,
     updatedAt: FieldValue.serverTimestamp(),
   }, { merge: true });
 
-  for (const item of Array.isArray(result.sharedHomework) ? result.sharedHomework.slice(0, 6) : []) {
-    await ctx.sessionRef.collection('sharedHomework').add({
+  // Deterministic document IDs make every write below idempotent under retry.
+  const homework = Array.isArray(result.sharedHomework) ? result.sharedHomework.slice(0, 6) : [];
+  for (let index = 0; index < homework.length; index += 1) {
+    const item = homework[index];
+    await ctx.sessionRef.collection('sharedHomework').doc(`${sessionId}_hw_${index}`).set({
       title: clean(item.title, 180),
       instructions: clean(item.instructions, 1500),
       dueAt: Timestamp.fromMillis(Date.now() + Math.max(1, Math.min(30, Number(item.dueDays) || 7)) * 86400000),
       status: 'active',
       createdAt: FieldValue.serverTimestamp(),
-    });
+    }, { merge: true });
   }
 
   const assignments = Array.isArray(result.secretAssignments) ? result.secretAssignments : [];
   for (const memberUid of ctx.couple.memberUids || []) {
     const item = assignments.find(assignment => assignment.memberUid === memberUid) || {};
-    await db().collection(`users/${memberUid}/secretAssignments`).add({
+    await db().doc(`users/${memberUid}/secretAssignments/session_${sessionId}`).set({
       sessionId,
       assignment: clean(item.assignment, 1500) || 'Practice one small, observable act of care before the next check-in.',
       internalReason: clean(item.internalReason, 1000),
       status: 'active',
       dueAt: Timestamp.fromMillis(Date.now() + 7 * 86400000),
       createdAt: FieldValue.serverTimestamp(),
-    });
+    }, { merge: true });
     const observerUid = ctx.couple.memberUids.find(value => value !== memberUid);
     if (observerUid) {
-      await db().collection(`users/${observerUid}/bridgePrompts`).add({
+      await db().doc(`users/${observerUid}/bridgePrompts/obs_${sessionId}_${memberUid}`).set({
         type: 'assignment-observation',
         theme: 'follow-up',
         prompt: clean(item.partnerObservationQuestion, 1000) || 'What positive or difficult change did you notice in your partner this week?',
@@ -403,18 +486,20 @@ async function completeSession(uid, data) {
         status: 'active',
         expiresAt: Timestamp.fromMillis(Date.now() + 21 * 86400000),
         createdAt: FieldValue.serverTimestamp(),
-      });
+      }, { merge: true });
     }
   }
 
-  await writeLedger(ctx.coupleRef, {
+  // Deterministic ledger doc ID prevents duplicate completion events on retry.
+  await ctx.coupleRef.collection('interactionLedger').doc(`complete_${sessionId}`).set({
     eventType: 'live-session-completed',
     actorUid: uid,
     sessionId,
     visibility: 'shared-summary',
     source: 'session',
     summary: clean(result.resolutionSummary, 500),
-  });
+    createdAt: FieldValue.serverTimestamp(),
+  }, { merge: true });
   return { ...result, costEstimate };
 }
 
@@ -428,6 +513,8 @@ export default async function handler(req, res) {
   return runWithGoogle(req, async () => {
     try {
       const token = await requireUser(req);
+      // App Check is enforced only when the production feature flag is enabled.
+      await verifyAppCheck(req, FEATURE_FLAGS.enforceAppCheck ? await getGoogleAccessToken().catch(() => null) : null);
       const action = clean(req.body?.action, 80);
       const operation = actions[action];
       if (!operation) throw httpError(400, 'Unknown Guide action.', 'unknown-action');
