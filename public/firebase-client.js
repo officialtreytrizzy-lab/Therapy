@@ -4,7 +4,7 @@ const V='12.16.0',S={ready:false,initializing:false,configured:false,error:null,
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const vals=id=>(document.getElementById(id)?.value||'').split('\n').map(v=>v.trim()).filter(Boolean);
 const PUBLIC_FIREBASE_CONFIG={projectId:'us-for-real-therapy',appId:'1:71136345766:web:74db974439d27f3070fe67',storageBucket:'us-for-real-therapy.firebasestorage.app',apiKey:'AIzaSyC6tA2wTtfD10Mb-SQ6Z2z08On1Od93EV0',authDomain:'us-for-real-therapy.firebaseapp.com',messagingSenderId:'71136345766',functionsRegion:'us-central1',appCheckSiteKey:''};
-const AUTH_CONTINUE_URL='https://couple-wellness.vercel.app/dashboard';
+const AUTH_CONTINUE_URL='https://couple-wellness-v-ideo-e-dit.vercel.app/dashboard';
 function bridgeState(){return{ready:S.ready,configured:S.configured,error:S.error,configSource:S.configSource,user:S.user,profile:S.profile,invites:S.invites,assignments:S.assignments,bridgePrompts:S.bridgePrompts,liveSessions:S.liveSessions}}
 function setSetupPreference(mode){if(!['solo','partner'].includes(mode))return;S.setupPreference=mode;localStorage.setItem('usfr-space-choice',mode);if(document.getElementById('fb2-back'))render()}
 const BRIDGE={open,refresh,sync:()=>syncProgress(true),call,guideCall,subscribeLiveSessions,subscribeLiveSession,getState:bridgeState,setSetupPreference,retry:()=>init(true)};
