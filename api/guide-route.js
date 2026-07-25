@@ -9,16 +9,23 @@ async function resolveCompletionRetry({ req, captured, db, token }) {
   const data = captured.body?.data;
   if (!data?.idempotent || String(data.resolutionSummary || '').trim()) return;
 
-  const userSnap = await db.doc(`users/${token.uid}`).get();
-  const coupleId = userSnap.data()?.coupleId;
+  const scope = String(req.body?.data?.scope || '').trim() === 'solo' ? 'solo' : 'couple';
   const sessionId = String(req.body?.data?.sessionId || '').trim().slice(0, 100);
-  if (!coupleId || !sessionId) {
+  let sessionRef = null;
+  if (scope === 'solo') {
+    // Solo sessions live under the member's own space; there is no couple.
+    if (sessionId) sessionRef = db.doc(`users/${token.uid}/soloSessions/${sessionId}`);
+  } else {
+    const userSnap = await db.doc(`users/${token.uid}`).get();
+    const coupleId = userSnap.data()?.coupleId;
+    if (coupleId && sessionId) sessionRef = db.doc(`couples/${coupleId}/liveSessions/${sessionId}`);
+  }
+  if (!sessionRef) {
     captured.statusCode = 409;
     captured.body = { error: { code: 'completion-retry-required', message: 'The session completion is not ready yet. Retry shortly.' } };
     return;
   }
 
-  const sessionRef = db.doc(`couples/${coupleId}/liveSessions/${sessionId}`);
   const sessionSnap = await sessionRef.get();
   const session = sessionSnap.data() || {};
 
