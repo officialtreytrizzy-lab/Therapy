@@ -52,9 +52,53 @@ async function userAndCouple(uid) {
   return { user, coupleId: user.coupleId, couple: coupleSnap.data(), coupleRef };
 }
 
-async function sessionContext(uid, sessionId) {
+// Additional guidance appended for SOLO sessions (one member, partner not present).
+const GUIDE_SOLO = `
+
+SOLO SESSION MODE
+- This is an individual session. Only one person is present; their partner is not on the call and may not use the app.
+- Do not mediate two people, address the partner, or assign the partner tasks.
+- Help this individual regulate, understand the situation, clarify their needs, values, and boundaries, prepare for or debrief a real conversation, and choose concrete, self-directed next steps.
+- Never fabricate the partner's words, intentions, or perspective. You may explore possible perspectives only as clearly labeled hypotheses ("one possibility is…"), never as fact.
+- Homework and any assignment belong to this person alone. There is no partner observation step.`;
+
+function guideSystem(ctx) {
+  return ctx.scope === 'solo' ? GUIDE_STANDARD + GUIDE_SOLO : GUIDE_STANDARD;
+}
+
+// Solo session context: a single-member session stored under the member's own space.
+async function soloSessionContext(uid, sessionId, base) {
+  const sessionRef = db().doc(`users/${uid}/soloSessions/${sessionId}`);
+  const sessionSnap = await sessionRef.get();
+  if (!sessionSnap.exists) throw httpError(404, 'Session not found.', 'session-not-found');
+  const [turnsSnap, privateSnap] = await Promise.all([
+    sessionRef.collection('turns').orderBy('createdAt', 'asc').limit(80).get(),
+    db().collection(`users/${uid}/privateInteractions`).orderBy('createdAt', 'desc').limit(12).get(),
+  ]);
+  return {
+    user: base.user,
+    coupleId: null,
+    couple: null,
+    coupleRef: null,
+    scope: 'solo',
+    memberUids: [uid],
+    sessionRef,
+    session: { id: sessionId, ...sessionSnap.data() },
+    // The solo "dossier" is the member's own private intake; there is no shared couple context.
+    dossier: { mode: 'solo', personalIntake: base.user?.personalIntake || {} },
+    turns: turnsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+    ownPrivate: privateSnap.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+    bridgePrompts: [],
+    members: [{ uid, displayName: base.user?.displayName || 'You' }],
+  };
+}
+
+async function sessionContext(uid, sessionId, scope) {
   const base = await userAndCouple(uid);
-  if (!base.coupleRef) throw httpError(409, 'Link a partner before starting a joint session.', 'couple-required');
+  // Route to the solo pipeline when explicitly requested or when the member has no couple.
+  if (scope === 'solo' || !base.coupleRef) {
+    return soloSessionContext(uid, sessionId, base);
+  }
   const sessionRef = base.coupleRef.collection('liveSessions').doc(sessionId);
   const sessionSnap = await sessionRef.get();
   if (!sessionSnap.exists || !sessionSnap.data().memberUids?.includes(uid)) throw httpError(404, 'Session not found.', 'session-not-found');
@@ -71,6 +115,8 @@ async function sessionContext(uid, sessionId) {
     .filter(item => !item.expiresAt?.toMillis || item.expiresAt.toMillis() > now);
   return {
     ...base,
+    scope: 'couple',
+    memberUids: base.couple.memberUids || [],
     sessionRef,
     session: { id: sessionId, ...sessionSnap.data() },
     dossier: dossierSnap.data()?.structured || {},
@@ -119,7 +165,33 @@ async function purgeExpired(coupleRef) {
   await batch.commit();
 }
 
+function fallbackSoloPlan(ctx) {
+  const safetyGate = ctx.session.safetyConcern && ctx.session.safetyConcern !== 'none'
+    ? 'Name any immediate safety concern first. If you are in danger, prioritize a safety plan and support resources over problem-solving the relationship.'
+    : 'Confirm you have privacy and a few uninterrupted minutes to reflect honestly.';
+  const modules = [
+    ['arrive', 'Arrive and regulate', 'Lower activation before analysis.', 'Rate your intensity from 1–10 and name one thing that would help you feel steadier right now.', '90-second grounding and readiness check.', 'You can think and choose words deliberately.'],
+    ['facts', 'Separate facts from story', 'Distinguish what happened from the meaning you attached.', 'What would a camera or message log actually show, separate from the conclusion you drew?', 'Facts-versus-story worksheet.', 'You can state the event without assuming motive.'],
+    ['feelings-needs', 'Name feelings and needs', 'Find the need underneath the strongest reaction.', 'What are you feeling underneath the surface reaction, and what need, value, or boundary is at stake?', 'Feeling → need mapping.', 'You can name the core need in one sentence.'],
+    ['perspective', 'Consider other perspectives', 'Hold your view and a hypothesis about theirs, without mind-reading.', 'What are one or two possible ways your partner might see this, labeled as guesses rather than facts?', 'Perspective-taking, hypotheses only.', 'You can hold more than one interpretation.'],
+    ['fairness', 'Check fairness and your part', 'Own what is yours without over- or under-owning.', 'What responsibility is genuinely yours here, and what is not yours to carry?', 'Intent-impact-responsibility review.', 'Responsibility is specific and honest.'],
+    ['request', 'Build a clear request or decision', 'Turn the need into a doable request or a decision you control.', 'What is one clear request you could make, or one decision you can make on your own?', 'Needs-options-request builder.', 'A concrete, self-directed next step is stated.'],
+    ['follow-up', 'Plan and protect the next step', 'Make the step real and time-bound.', 'When and how will you take this step, and how will you know it went well?', 'One-week experiment and confidence check.', 'The plan is observable, time-bounded, and safe.'],
+  ].map(([id, title, purpose, prompt, exercise, completionSignal]) => ({ id, title, purpose, prompt, exercise, completionSignal }));
+  return {
+    title: ctx.session.topic || 'Guided Individual Session',
+    objective: ctx.session.desiredOutcome || 'Understand the situation clearly and choose a concrete next step you control.',
+    safetyGate,
+    openingPrompt: 'Before problem-solving, name your current intensity and the one outcome you most want from working through this.',
+    resolutionTargets: ['Separate facts from story', 'Name your core need', 'Own your part fairly', 'Choose a self-directed next step'],
+    likelyChallenges: ['Mind-reading the partner', 'Rumination', 'Jumping to solutions before understanding'],
+    modules,
+    generationStatus: 'structured-fallback',
+  };
+}
+
 function fallbackPlan(ctx) {
+  if (ctx.scope === 'solo') return fallbackSoloPlan(ctx);
   const safetyGate = ctx.session.safetyConcern && ctx.session.safetyConcern !== 'none'
     ? 'Clarify immediate safety and whether joint work is appropriate before discussing the dispute.'
     : 'Confirm both members can participate without intimidation, interruption, or retaliation.';
@@ -171,7 +243,24 @@ function fallbackPrivateCoach(content) {
 }
 
 function fallbackCompletion(ctx) {
-  const memberUids = ctx.couple.memberUids || [];
+  const memberUids = ctx.memberUids || [];
+  if (ctx.scope === 'solo') {
+    return {
+      resolutionStatus: 'partial',
+      resolutionSummary: 'This session clarified the situation, your feelings and needs, and a concrete next step you can take on your own. Treat any insight about your partner as a hypothesis until you can check it directly with them.',
+      unresolved: ['Have the direct conversation or take the decided next step', 'Notice what actually happens and adjust'],
+      sharedHomework: [{ title: 'One-week experiment', instructions: 'Take the specific next step you identified, then note what helped, what got in the way, and how you felt afterward.', dueDays: 7 }],
+      secretAssignments: memberUids.map(memberUid => ({
+        memberUid,
+        assignment: 'Practice making one clear, motive-free request or decision this week and observe the result.',
+        internalReason: 'Reinforce the self-directed communication skill identified in the session.',
+        partnerObservationQuestion: '',
+      })),
+      fairnessNotes: [],
+      followUpTopic: ctx.session.topic || 'Review the experiment',
+      generationStatus: 'structured-fallback',
+    };
+  }
   return {
     resolutionStatus: 'partial',
     resolutionSummary: 'The session established the issue, each perspective, and the need for a concrete follow-up. A final resolution should not be claimed until both members confirm that the proposed boundary or repair is realistic and has been followed in practice.',
@@ -191,13 +280,14 @@ function fallbackCompletion(ctx) {
 
 async function planSession(uid, data) {
   await enforceRateLimit(db(), `guide-plan:user:${uid}`, 30, 3600);
-  const ctx = await sessionContext(uid, clean(data.sessionId, 100));
-  await purgeExpired(ctx.coupleRef);
+  const ctx = await sessionContext(uid, clean(data.sessionId, 100), clean(data.scope, 20));
+  if (ctx.coupleRef) await purgeExpired(ctx.coupleRef);
+  const solo = ctx.scope === 'solo';
   let result;
   try {
     const generated = await gemini(
-      GUIDE_STANDARD,
-      `Build a serious progressive couple-session plan around the current topic. The plan may last ${ctx.session.durationLimitMinutes} minutes, but must adapt to safety and progress. Return JSON with title, objective, safetyGate, openingPrompt, resolutionTargets array, likelyChallenges array, and modules array of 6-10 concise objects with id, title, purpose, prompt, exercise, completionSignal.\n\nCONTEXT:\n${contextSummary(ctx)}`,
+      guideSystem(ctx),
+      `Build a serious progressive ${solo ? 'individual' : 'couple'}-session plan around the current topic. The plan may last ${ctx.session.durationLimitMinutes} minutes, but must adapt to safety and progress. ${solo ? 'This is a solo session: the modules guide one person to understand, prepare, decide, and take self-directed next steps — never to mediate a partner who is not present.' : ''} Return JSON with title, objective, safetyGate, openingPrompt, resolutionTargets array, likelyChallenges array, and modules array of 6-10 concise objects with id, title, purpose, prompt, exercise, completionSignal.\n\nCONTEXT:\n${contextSummary(ctx)}`,
       3200,
     );
     const validated = validatePlan(generated);
@@ -240,16 +330,17 @@ async function respond(uid, data) {
   const sessionId = clean(data.sessionId, 100);
   const message = clean(data.message, 6000);
   if (!message) throw httpError(400, 'Enter a response.', 'message-required');
-  const ctx = await sessionContext(uid, sessionId);
+  const ctx = await sessionContext(uid, sessionId, clean(data.scope, 20));
   if (ctx.session.status === 'completed') throw httpError(409, 'This session is already complete.', 'session-complete');
-  const speaker = ctx.members.find(member => member.uid === uid)?.displayName || ctx.user.displayName || 'Partner';
+  const solo = ctx.scope === 'solo';
+  const speaker = ctx.members.find(member => member.uid === uid)?.displayName || ctx.user.displayName || (solo ? 'You' : 'Partner');
   await ctx.sessionRef.collection('turns').add({ role: 'user', authorUid: uid, speakerName: speaker, content: message, source: 'user-input', createdAt: FieldValue.serverTimestamp() });
   ctx.turns.push({ role: 'user', speakerName: speaker, content: message });
   let result;
   try {
     const generated = await gemini(
-      GUIDE_STANDARD,
-      `Respond to the newest shared-session turn. Return JSON with message, phase, directAccountability string or empty, probeQuestion one question or empty, exercise object or null, safetyFlag boolean, resolutionMovement string. If someone is wrong or unfair based on direct evidence, state it respectfully and explain the better alternative.\n\nCONTEXT:\n${contextSummary(ctx)}`,
+      guideSystem(ctx),
+      `Respond to the newest ${solo ? 'individual-session' : 'shared-session'} turn. Return JSON with message, phase, directAccountability string or empty, probeQuestion one question or empty, exercise object or null, safetyFlag boolean, resolutionMovement string. If a behavior or expectation is unfair or unsafe based on direct evidence, say so respectfully and explain the better alternative.\n\nCONTEXT:\n${contextSummary(ctx)}`,
     );
     const validated = validateResponse(generated);
     result = validated.ok ? validated.value : fallbackResponse(ctx, message);
@@ -268,7 +359,7 @@ async function respond(uid, data) {
   }
   await ctx.sessionRef.collection('turns').add({ role: 'guide', speakerName: 'Guide', content: clean(result.message, 6000), phase: clean(result.phase, 80), directAccountability: clean(result.directAccountability, 1400), source: 'ai-generated', promptVersion: PROMPT_VERSION, createdAt: FieldValue.serverTimestamp() });
   await ctx.sessionRef.set({ phase: clean(result.phase, 80) || ctx.session.phase, safetyFlag: result.safetyFlag === true, updatedAt: FieldValue.serverTimestamp() }, { merge: true });
-  await writeLedger(ctx.coupleRef, { eventType: 'shared-session-turn', actorUid: uid, sessionId, visibility: 'shared', source: 'user-input', summary: `Shared session turn by ${speaker}` });
+  if (ctx.coupleRef) await writeLedger(ctx.coupleRef, { eventType: 'shared-session-turn', actorUid: uid, sessionId, visibility: 'shared', source: 'user-input', summary: `Shared session turn by ${speaker}` });
   return result;
 }
 
@@ -392,7 +483,8 @@ async function existingCompletion(ctx, sessionId) {
 async function completeSession(uid, data) {
   await enforceRateLimit(db(), `guide-complete:user:${uid}`, 20, 3600);
   const sessionId = clean(data.sessionId, 100);
-  const ctx = await sessionContext(uid, sessionId);
+  const ctx = await sessionContext(uid, sessionId, clean(data.scope, 20));
+  const solo = ctx.scope === 'solo';
 
   // Idempotency: claim the completion atomically. If the session is already
   // completed or another request is completing it, return the stored result
@@ -412,8 +504,8 @@ async function completeSession(uid, data) {
   let result;
   try {
     const generated = await gemini(
-      GUIDE_STANDARD,
-      `Close this session honestly. Return JSON with resolutionStatus (resolved, partial, paused, unsafe), resolutionSummary, unresolved array, sharedHomework array of objects with title, instructions, dueDays, secretAssignments array with memberUid, assignment, internalReason, partnerObservationQuestion, fairnessNotes array, followUpTopic. Include exactly one safe secret assignment per member. A partner observation question must not reveal that an assignment existed.\n\nCONTEXT:\n${contextSummary(ctx)}`,
+      guideSystem(ctx),
+      `Close this session honestly. Return JSON with resolutionStatus (resolved, partial, paused, unsafe), resolutionSummary, unresolved array, sharedHomework array of objects with title, instructions, dueDays, secretAssignments array with memberUid, assignment, internalReason, partnerObservationQuestion, fairnessNotes array, followUpTopic. ${solo ? 'This is a solo session: sharedHomework is this person\'s own practice, and secretAssignments has exactly one entry for this member with no partnerObservationQuestion.' : 'Include exactly one safe secret assignment per member. A partner observation question must not reveal that an assignment existed.'}\n\nCONTEXT:\n${contextSummary(ctx)}`,
       3600,
     );
     const validated = validateCompletion(generated);
@@ -465,17 +557,20 @@ async function completeSession(uid, data) {
   }
 
   const assignments = Array.isArray(result.secretAssignments) ? result.secretAssignments : [];
-  for (const memberUid of ctx.couple.memberUids || []) {
-    const item = assignments.find(assignment => assignment.memberUid === memberUid) || {};
+  const memberUids = ctx.memberUids || [];
+  for (const memberUid of memberUids) {
+    const item = assignments.find(assignment => assignment.memberUid === memberUid) || assignments[0] || {};
     await db().doc(`users/${memberUid}/secretAssignments/session_${sessionId}`).set({
       sessionId,
+      scope: ctx.scope,
       assignment: clean(item.assignment, 1500) || 'Practice one small, observable act of care before the next check-in.',
       internalReason: clean(item.internalReason, 1000),
       status: 'active',
       dueAt: Timestamp.fromMillis(Date.now() + 7 * 86400000),
       createdAt: FieldValue.serverTimestamp(),
     }, { merge: true });
-    const observerUid = ctx.couple.memberUids.find(value => value !== memberUid);
+    // Partner observation prompts only exist when there is a partner (couple sessions).
+    const observerUid = memberUids.find(value => value !== memberUid);
     if (observerUid) {
       await db().doc(`users/${observerUid}/bridgePrompts/obs_${sessionId}_${memberUid}`).set({
         type: 'assignment-observation',
@@ -491,15 +586,18 @@ async function completeSession(uid, data) {
   }
 
   // Deterministic ledger doc ID prevents duplicate completion events on retry.
-  await ctx.coupleRef.collection('interactionLedger').doc(`complete_${sessionId}`).set({
-    eventType: 'live-session-completed',
-    actorUid: uid,
-    sessionId,
-    visibility: 'shared-summary',
-    source: 'session',
-    summary: clean(result.resolutionSummary, 500),
-    createdAt: FieldValue.serverTimestamp(),
-  }, { merge: true });
+  // Solo sessions have no shared couple ledger.
+  if (ctx.coupleRef) {
+    await ctx.coupleRef.collection('interactionLedger').doc(`complete_${sessionId}`).set({
+      eventType: 'live-session-completed',
+      actorUid: uid,
+      sessionId,
+      visibility: 'shared-summary',
+      source: 'session',
+      summary: clean(result.resolutionSummary, 500),
+      createdAt: FieldValue.serverTimestamp(),
+    }, { merge: true });
+  }
   return { ...result, costEstimate };
 }
 

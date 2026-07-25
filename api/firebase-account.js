@@ -763,6 +763,48 @@ async function createLiveSession(uid, data) {
   return { id: ref.id, ...session };
 }
 
+// Equal pipeline for members without a partner on the app. A solo session lives under
+// the member's own space, starts active immediately (no second participant to wait
+// for), and drives the same Guide plan → turns → completion flow.
+async function createSoloSession(uid, data) {
+  await enforceRateLimit(getDb(), `solo-session:user:${uid}`, 12, 86400);
+  const userRef = getDb().doc(`users/${uid}`);
+  const userSnap = await userRef.get();
+  if (!userSnap.exists) throw httpError(409, 'Finish account setup first.', 'profile-required');
+  const topic = clean(data.topic, 500);
+  if (!topic) throw httpError(400, 'Describe the topic for this session.', 'topic-required');
+  const type = clean(data.type, 80) || 'custom_session';
+  const durationLimitMinutes = safeMinutes(data.durationLimitMinutes);
+  const ref = userRef.collection('soloSessions').doc();
+  const session = {
+    scope: 'solo',
+    ownerUid: uid,
+    memberUids: [uid],
+    createdBy: uid,
+    type,
+    custom: type === 'custom_session',
+    topic,
+    scenario: clean(data.scenario, 3000),
+    desiredOutcome: clean(data.desiredOutcome, 1000),
+    emotionalIntensity: Math.max(1, Math.min(10, Number(data.emotionalIntensity) || 5)),
+    safetyConcern: clean(data.safetyConcern, 120),
+    status: 'active',
+    phase: 'intake',
+    resolutionStatus: 'not-started',
+    durationLimitMinutes,
+    maxDurationSeconds: durationLimitMinutes * 60,
+    participantStatus: { [uid]: 'ready' },
+    startedAt: FieldValue.serverTimestamp(),
+    endedAt: null,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+    estimatedRateMinUsd: 150,
+    estimatedRateMaxUsd: 400,
+  };
+  await ref.create(session);
+  return { id: ref.id, ...session };
+}
+
 async function joinLiveSession(uid, data) {
   const { coupleRef, couple } = await requireCouple(uid);
   const sessionId = clean(data.sessionId, 100);
@@ -1145,6 +1187,7 @@ async function reportAbuse(uid, data) {
 const actions = {
   completeRelationshipSetup: (uid, _token, data) => completeRelationshipSetup(uid, data),
   createLiveSession: (uid, _token, data) => createLiveSession(uid, data),
+  createSoloSession: (uid, _token, data) => createSoloSession(uid, data),
   joinLiveSession: (uid, _token, data) => joinLiveSession(uid, data),
   heartbeatLiveSession: (uid, _token, data) => heartbeatLiveSession(uid, data),
   saveAssignmentFeedback: (uid, _token, data) => saveAssignmentFeedback(uid, data),

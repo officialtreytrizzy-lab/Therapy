@@ -64,6 +64,21 @@ service cloud.firestore {
         allow read: if isSelf(uid);
         allow write: if false;
       }
+
+      match /soloSessions/{sessionId} {
+        allow read: if isSelf(uid);
+        allow write: if false;
+
+        match /turns/{turnId} {
+          allow read: if isSelf(uid);
+          allow write: if false;
+        }
+
+        match /sharedHomework/{homeworkId} {
+          allow read: if isSelf(uid);
+          allow write: if false;
+        }
+      }
     }
 
     match /memberDirectory/{memberCode} {

@@ -22,6 +22,10 @@ test('P0-5: refreshGuideDossier and deletion lifecycle actions are registered', 
   }
 });
 
+test('solo members have an equal session pipeline (createSoloSession registered)', () => {
+  assert.ok(accountActionNames.includes('createSoloSession'), 'createSoloSession must be registered so solo members can start sessions');
+});
+
 test('account and guide handlers reject non-POST with 405', async () => {
   const res1 = mockRes();
   await accountHandler({ method: 'GET', headers: {} }, res1);
