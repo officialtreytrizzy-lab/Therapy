@@ -64,7 +64,7 @@ test('deletion worker accepts only a configured bearer secret', () => {
 
 test('shallow health check reports release readiness without external calls', async () => {
   const res = mockRes();
-  await healthz({ method: 'GET', headers: {}, query: {} }, res);
+  await healthz({ method: 'GET', url: '/api/healthz', headers: {}, query: {} }, res);
   assert.equal(res.statusCode, 200);
   assert.equal(res.body.status, res.body.releaseReady ? 'ok' : 'attention-required');
   assert.ok(res.body.readiness);
@@ -77,7 +77,8 @@ test('the consolidated health function accepts bounded CSP reports', async () =>
   const res = mockRes();
   await healthz({
     method: 'POST',
-    headers: { 'content-length': '140' },
+    url: '/api/csp-report',
+    headers: { 'content-length': '140', 'content-type': 'application/csp-report' },
     body: {
       'csp-report': {
         'effective-directive': 'script-src-attr',
@@ -88,4 +89,16 @@ test('the consolidated health function accepts bounded CSP reports', async () =>
   }, res);
   assert.equal(res.statusCode, 204);
   assert.equal(res.ended, true);
+});
+
+test('CSP and health routes reject the wrong HTTP method', async () => {
+  const csp = mockRes();
+  await healthz({ method: 'GET', url: '/api/csp-report', headers: {}, query: {} }, csp);
+  assert.equal(csp.statusCode, 405);
+  assert.equal(csp.headers.allow, 'POST');
+
+  const health = mockRes();
+  await healthz({ method: 'POST', url: '/api/healthz', headers: { 'content-type': 'application/json' }, body: {} }, health);
+  assert.equal(health.statusCode, 405);
+  assert.equal(health.headers.allow, 'GET');
 });
