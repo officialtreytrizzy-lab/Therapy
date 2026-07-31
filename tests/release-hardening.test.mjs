@@ -8,6 +8,8 @@ const index = read('../public/index.html');
 const security = read('../api/security.js');
 const firebaseConfig = read('../api/firebase-config.js');
 const health = read('../api/healthz.js');
+const consentApi = read('../api/consent.js');
+const consentGate = read('../public/consent-gate.js');
 const workflow = read('../.github/workflows/public-beta.yml');
 const packageJson = JSON.parse(read('../package.json'));
 
@@ -24,11 +26,22 @@ test('CSP blocks inline script elements and reports the remaining legacy attribu
   assert.match(reporting, /report-uri \/api\/csp-report/);
 });
 
-test('the app exposes accessibility and legal safeguards from the root entrypoint', () => {
+test('the app exposes accessibility, consent, and legal safeguards from the root entrypoint', () => {
   assert.match(index, /accessibility\.css/);
   assert.match(index, /legal\.css/);
+  assert.match(index, /consent-gate\.css/);
   assert.match(index, /accessibility-hardening\.js/);
   assert.match(index, /legal-links\.js/);
+  assert.match(index, /consent-gate\.js/);
+});
+
+test('versioned adult and wellness-policy consent is recorded server-side', () => {
+  assert.match(consentApi, /POLICY_VERSION = '2026-07-31\.1'/);
+  assert.match(consentApi, /policyConsentAcceptedAt/);
+  assert.match(consentApi, /adultEligibilityConfirmedAt/);
+  assert.match(consentApi, /verifyAppCheck/);
+  assert.match(consentGate, /Decline and sign out/);
+  assert.match(consentGate, /\/api\/consent/);
 });
 
 test('App Check readiness distinguishes enforcement from missing client configuration', () => {
