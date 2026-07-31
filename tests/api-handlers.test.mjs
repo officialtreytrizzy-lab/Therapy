@@ -10,9 +10,11 @@ function mockRes() {
     statusCode: 200,
     headers: {},
     body: null,
+    ended: false,
     setHeader(key, value) { this.headers[key.toLowerCase()] = value; },
     status(code) { this.statusCode = code; return this; },
     json(payload) { this.body = payload; return this; },
+    end() { this.ended = true; return this; },
   };
 }
 
@@ -60,12 +62,30 @@ test('deletion worker accepts only a configured bearer secret', () => {
   }
 });
 
-test('shallow health check reports config readiness without external calls', async () => {
+test('shallow health check reports release readiness without external calls', async () => {
   const res = mockRes();
   await healthz({ method: 'GET', headers: {}, query: {} }, res);
   assert.equal(res.statusCode, 200);
-  assert.equal(res.body.status, 'ok');
+  assert.equal(res.body.status, res.body.releaseReady ? 'ok' : 'attention-required');
   assert.ok(res.body.readiness);
   assert.equal(typeof res.body.readiness.firebaseConfig, 'boolean');
+  assert.ok(['boolean', 'string'].includes(typeof res.body.readiness.appCheckEnforced));
   assert.equal(res.body.dependencies, null, 'no deep dependency probe on shallow check');
+});
+
+test('the consolidated health function accepts bounded CSP reports', async () => {
+  const res = mockRes();
+  await healthz({
+    method: 'POST',
+    headers: { 'content-length': '140' },
+    body: {
+      'csp-report': {
+        'effective-directive': 'script-src-attr',
+        'blocked-uri': 'inline',
+        'document-uri': 'https://example.test/private?secret=removed',
+      },
+    },
+  }, res);
+  assert.equal(res.statusCode, 204);
+  assert.equal(res.ended, true);
 });
