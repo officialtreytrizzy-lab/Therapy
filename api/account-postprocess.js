@@ -32,18 +32,6 @@ export function createFirestoreForRequest(req) {
   });
 }
 
-export function decodeFirebaseToken(req) {
-  const authorization = String(req.headers?.authorization || '');
-  const match = authorization.match(/^Bearer\s+(.+)$/i);
-  if (!match) throw new Error('Firebase bearer token is unavailable.');
-  const parts = match[1].split('.');
-  if (parts.length !== 3) throw new Error('Firebase bearer token is malformed.');
-  const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-  const uid = String(payload.sub || '');
-  if (!uid || uid.length > 128) throw new Error('Firebase user ID is invalid.');
-  return { ...payload, uid };
-}
-
 export function captureResponse() {
   return {
     statusCode: 200,

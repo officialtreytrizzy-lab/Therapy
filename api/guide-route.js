@@ -1,6 +1,6 @@
 import { FieldValue } from '@google-cloud/firestore';
 import baseHandler from './guide.js';
-import { captureResponse, createFirestoreForRequest, decodeFirebaseToken, flushCaptured, timestampMillis } from './account-postprocess.js';
+import { captureResponse, createFirestoreForRequest, flushCaptured, timestampMillis } from './account-postprocess.js';
 
 const CLAIM_STALE_AFTER_MS = Math.max(30_000, Number(process.env.GUIDE_COMPLETION_CLAIM_STALE_MS || 120_000));
 
@@ -72,24 +72,16 @@ async function resolveCompletionRetry({ req, captured, db, token }) {
 
 export default async function handler(req, res) {
   const captured = captureResponse();
-  let db = null;
-  let token = null;
-
-  try {
-    if (req.method === 'POST') {
-      token = decodeFirebaseToken(req);
-      db = createFirestoreForRequest(req);
-    }
-  } catch {
-    db = null;
-    token = null;
-  }
-
   await baseHandler(req, captured);
 
-  if (captured.statusCode >= 200 && captured.statusCode < 300 && db && token) {
+  if (captured.statusCode >= 200 && captured.statusCode < 300 && captured.__verifiedFirebaseToken) {
     try {
-      await resolveCompletionRetry({ req, captured, db, token });
+      await resolveCompletionRetry({
+        req,
+        captured,
+        db: createFirestoreForRequest(req),
+        token: captured.__verifiedFirebaseToken,
+      });
     } catch (error) {
       console.error('Guide completion consistency check failed', error?.code || error?.message || 'unknown');
       captured.statusCode = 500;
@@ -102,5 +94,6 @@ export default async function handler(req, res) {
     }
   }
 
+  delete captured.__verifiedFirebaseToken;
   return flushCaptured(res, captured);
 }

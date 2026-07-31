@@ -1,6 +1,6 @@
 import { ExternalAccountClient } from 'google-auth-library';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { verify as verifySignature } from 'node:crypto';
+import { randomInt, verify as verifySignature } from 'node:crypto';
 import { FieldValue, Firestore, Timestamp } from '@google-cloud/firestore';
 import { audit, correlationId, enforceRateLimit, FEATURE_FLAGS, redactedLog, verifyAppCheck } from './security.js';
 
@@ -8,6 +8,7 @@ const PROJECT_ID = process.env.FIREBASE_PROJECT_ID || 'us-for-real-therapy';
 const INVITE_TTL_DAYS = 7;
 const DELETE_GRACE_DAYS = 7;
 const FIREBASE_CERTS_URL = 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
+const EXTERNAL_FETCH_TIMEOUT_MS = Math.max(1_000, Math.min(120_000, Number(process.env.EXTERNAL_FETCH_TIMEOUT_MS) || 30_000));
 let firebaseCertCache = { certificates: null, expiresAt: 0 };
 
 const oidcContext = new AsyncLocalStorage();
@@ -83,7 +84,15 @@ async function getFirebaseCertificates() {
   if (firebaseCertCache.certificates && firebaseCertCache.expiresAt > Date.now() + 30_000) {
     return firebaseCertCache.certificates;
   }
-  const response = await fetch(FIREBASE_CERTS_URL, { headers: { accept: 'application/json' } });
+  let response;
+  try {
+    response = await fetch(FIREBASE_CERTS_URL, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
+    });
+  } catch {
+    throw httpError(503, 'Firebase sign-in verification is temporarily unavailable.', 'certificates-unavailable');
+  }
   if (!response.ok) throw httpError(503, 'Firebase sign-in verification is temporarily unavailable.', 'certificates-unavailable');
   const certificates = await response.json();
   const cacheControl = response.headers.get('cache-control') || '';
@@ -138,7 +147,7 @@ async function requireUser(req) {
 }
 
 function randomMemberCode() {
-  return String(Math.floor(10000000 + Math.random() * 90000000));
+  return String(randomInt(10_000_000, 100_000_000));
 }
 
 async function provisionProfile(uid, token, data) {
@@ -978,6 +987,7 @@ async function deleteFirebaseAuthUser(uid) {
     method: 'POST',
     headers: { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' },
     body: JSON.stringify({ localId: uid }),
+    signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
   });
   if (!response.ok && response.status !== 404) {
     const payload = await response.json().catch(() => ({}));
@@ -1276,12 +1286,17 @@ export default async function handler(req, res) {
     res.setHeader('X-Correlation-Id', cid);
     try {
       const token = await requireUser(req);
+      res.__verifiedFirebaseToken = token;
       // App Check is enforced only when the production feature flag is enabled; the
       // token exchange is skipped entirely otherwise, so default deploys are unaffected.
       await verifyAppCheck(req, FEATURE_FLAGS.enforceAppCheck ? await contextGoogleAccessToken().catch(() => null) : null);
       const action = clean(req.body?.action, 80);
       const operation = actions[action];
       if (!operation) throw httpError(400, 'Unknown account action.', 'unknown-action');
+      if (action === 'confirmSharedHistoryDeletion') {
+        const userSnap = await getDb().doc(`users/${token.uid}`).get();
+        res.__priorCoupleId = userSnap.data()?.coupleId || null;
+      }
       const result = await operation(token.uid, token, req.body?.data || {});
       return res.status(200).json({ data: result });
     } catch (error) {

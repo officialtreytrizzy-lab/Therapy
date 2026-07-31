@@ -1,6 +1,6 @@
 import { FieldValue } from '@google-cloud/firestore';
 import baseHandler from './firebase-account.js';
-import { captureResponse, createFirestoreForRequest, decodeFirebaseToken, flushCaptured } from './account-postprocess.js';
+import { captureResponse, createFirestoreForRequest, flushCaptured } from './account-postprocess.js';
 
 async function activeRelationshipStatus(db, uid, user) {
   const coupleId = user?.coupleId || null;
@@ -42,29 +42,15 @@ export async function postprocessAccountAction({ req, captured, db, token, prior
 
 export default async function handler(req, res) {
   const captured = captureResponse();
-  let db = null;
-  let token = null;
-  let priorCoupleId = null;
-
-  try {
-    if (req.method === 'POST') {
-      token = decodeFirebaseToken(req);
-      db = createFirestoreForRequest(req);
-      if (req.body?.action === 'confirmSharedHistoryDeletion') {
-        const before = await db.doc(`users/${token.uid}`).get();
-        priorCoupleId = before.data()?.coupleId || null;
-      }
-    }
-  } catch {
-    // The canonical handler still performs full token and OIDC verification.
-    db = null;
-    token = null;
-  }
-
   await baseHandler(req, captured);
 
-  if (captured.statusCode >= 200 && captured.statusCode < 300 && db && token) {
+  if (captured.statusCode >= 200 && captured.statusCode < 300 && captured.__verifiedFirebaseToken) {
     try {
+      const token = captured.__verifiedFirebaseToken;
+      const db = createFirestoreForRequest(req);
+      const priorCoupleId = req.body?.action === 'confirmSharedHistoryDeletion'
+        ? captured.__priorCoupleId || null
+        : null;
       await postprocessAccountAction({ req, captured, db, token, priorCoupleId });
     } catch (error) {
       console.error('Account lifecycle post-processing failed', error?.code || error?.message || 'unknown');
@@ -78,5 +64,7 @@ export default async function handler(req, res) {
     }
   }
 
+  delete captured.__verifiedFirebaseToken;
+  delete captured.__priorCoupleId;
   return flushCaptured(res, captured);
 }

@@ -9,6 +9,7 @@ export const VERTEX_PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || PROJECT_ID;
 export const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 export const LOCATION = process.env.GOOGLE_CLOUD_LOCATION || 'global';
 const CERTS_URL = 'https://www.googleapis.com/robot/v1/metadata/x509/securetoken@system.gserviceaccount.com';
+const EXTERNAL_FETCH_TIMEOUT_MS = Math.max(1_000, Math.min(120_000, Number(process.env.EXTERNAL_FETCH_TIMEOUT_MS) || 30_000));
 const requestContext = new AsyncLocalStorage();
 let certCache = { value: null, expiresAt: 0 };
 
@@ -58,7 +59,15 @@ export function db() {
 }
 async function certificates() {
   if (certCache.value && certCache.expiresAt > Date.now() + 30_000) return certCache.value;
-  const response = await fetch(CERTS_URL, { headers: { accept: 'application/json' } });
+  let response;
+  try {
+    response = await fetch(CERTS_URL, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
+    });
+  } catch {
+    throw httpError(503, 'Sign-in verification is temporarily unavailable.', 'certificates-unavailable');
+  }
   if (!response.ok) throw httpError(503, 'Sign-in verification is temporarily unavailable.', 'certificates-unavailable');
   const value = await response.json();
   const maxAge = Number((response.headers.get('cache-control') || '').match(/max-age=(\d+)/i)?.[1] || 3600);
@@ -73,14 +82,28 @@ async function verifyIdToken(token) {
   const payload = decode(encodedPayload);
   if (header.alg !== 'RS256' || !header.kid) throw httpError(401, 'Unsupported sign-in signature.', 'invalid-token');
   const cert = (await certificates())[header.kid];
-  const valid = cert && verifySignature(
+  if (!cert) {
+    certCache.expiresAt = 0;
+    throw httpError(401, 'Your sign-in session was signed with an unknown key.', 'invalid-token');
+  }
+  const valid = verifySignature(
     'RSA-SHA256',
     Buffer.from(`${encodedHeader}.${encodedPayload}`),
     cert,
     Buffer.from(encodedSignature, 'base64url'),
   );
   const now = Math.floor(Date.now() / 1000);
-  if (!valid || payload.aud !== PROJECT_ID || payload.iss !== `https://securetoken.google.com/${PROJECT_ID}` || payload.exp <= now || !payload.sub) {
+  const validSubject = typeof payload.sub === 'string' && payload.sub.length > 0 && payload.sub.length <= 128;
+  const validTimes = Number.isFinite(payload.exp)
+    && payload.exp > now
+    && Number.isFinite(payload.iat)
+    && payload.iat <= now + 60
+    && (payload.auth_time == null || (Number.isFinite(payload.auth_time) && payload.auth_time <= now + 60));
+  if (!valid
+    || payload.aud !== PROJECT_ID
+    || payload.iss !== `https://securetoken.google.com/${PROJECT_ID}`
+    || !validSubject
+    || !validTimes) {
     throw httpError(401, 'Your sign-in session is invalid or expired.', 'invalid-token');
   }
   return { ...payload, uid: payload.sub };
@@ -116,15 +139,21 @@ function parseJson(text) {
   throw httpError(502, 'The Guide returned an invalid structured response.', 'invalid-guide-response');
 }
 async function generateVertexJson(token, url, system, prompt, maxOutputTokens, temperature = 0.35) {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-    body: JSON.stringify({
-      systemInstruction: { parts: [{ text: system }] },
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature, maxOutputTokens, responseMimeType: 'application/json' },
-    }),
-  });
+  let response;
+  try {
+    response = await fetch(url, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: { parts: [{ text: system }] },
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: { temperature, maxOutputTokens, responseMimeType: 'application/json' },
+      }),
+      signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
+    });
+  } catch {
+    throw httpError(502, 'The Guide is temporarily unavailable.', 'vertex-error');
+  }
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw httpError(502, payload?.error?.message || 'The Guide is temporarily unavailable.', 'vertex-error');
   return {

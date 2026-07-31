@@ -13,6 +13,8 @@ const SMTP_PASS = String(process.env.SMTP_PASS || '');
 const SMTP_FROM = String(process.env.SMTP_FROM || SMTP_USER).trim();
 const SMTP_FROM_NAME = String(process.env.SMTP_FROM_NAME || 'US, FOR REAL').trim();
 const SMTP_REPLY_TO = String(process.env.SMTP_REPLY_TO || SMTP_FROM).trim();
+const EXTERNAL_FETCH_TIMEOUT_MS = Math.max(1_000, Math.min(120_000, Number(process.env.EXTERNAL_FETCH_TIMEOUT_MS) || 30_000));
+const SMTP_TIMEOUT_MS = Math.max(1_000, Math.min(120_000, Number(process.env.SMTP_TIMEOUT_MS) || 30_000));
 
 export function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
@@ -67,6 +69,7 @@ async function generateFirebaseSignInLink(email) {
       canHandleCodeInApp: true,
       returnOobLink: true,
     }),
+    signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload.oobLink) {
@@ -86,6 +89,9 @@ async function sendWithIonos(email, link) {
     secure: SMTP_SECURE,
     auth: { user: SMTP_USER, pass: SMTP_PASS },
     tls: { minVersion: 'TLSv1.2' },
+    connectionTimeout: SMTP_TIMEOUT_MS,
+    greetingTimeout: SMTP_TIMEOUT_MS,
+    socketTimeout: SMTP_TIMEOUT_MS,
   });
   await transport.sendMail({
     from: { name: SMTP_FROM_NAME, address: SMTP_FROM },

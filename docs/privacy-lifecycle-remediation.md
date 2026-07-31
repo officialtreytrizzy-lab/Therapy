@@ -27,14 +27,15 @@ requires a live Firebase/Vercel environment to finish or verify.
 | 7 | Behavioral tests | Partial | `tests/guide-schema.test.mjs`, `tests/api-handlers.test.mjs`. **needs env:** Firestore Emulator rule tests, mocked Vertex handler tests, Playwright, axe are not runnable in this container. |
 | 8 | Real CI build | Fixed | `scripts/build.mjs` (syntax-checks all JS, validates index.html asset refs, flags dead assets); `package.json`/CI updated |
 | 9 | Accessibility | Partial | `public/firebase-client.js` (focus trap, Escape, focus restoration, labelled close), `public/index.html` (toast live region). **remaining:** form-error association, icon-button labels across the older views |
-| 10 | Frontend consolidation | Not done | Large refactor (modules/TS, remove inline handlers, drop `premium*`/`premium-loader.js`). Tracked, not attempted here. |
+| 10 | Frontend consolidation | Partial | Removed the abandoned `premium-loader.js`/chunk engine and its `window.eval` path. **remaining:** convert global scripts and inline handlers/styles into modules/components so CSP can drop `unsafe-inline`. |
 | 11 | Dependency-aware health check | Fixed | `api/healthz.js` (readiness booleans + `?deep=1` Firestore/auth probe via `probeFirestore`) |
 | 12 | Professional launch review | Out of scope | Legal/privacy/safety/clinical review remains outstanding |
 
 ## Operator setup required (env)
 
 - `FIREBASE_APPCHECK_ENFORCE=true` and `FIREBASE_APP_CHECK_SITE_KEY` to activate App Check.
-- `DELETION_WORKER_SECRET` for manual invocation of `/api/deletion-worker`; the Vercel
-  Cron invoker is authorized automatically via the `x-vercel-cron` header.
+- `CRON_SECRET` for Vercel Cron invocation of `/api/deletion-worker`. Vercel sends it as
+  `Authorization: Bearer $CRON_SECRET`; the worker fails closed when it is missing or mismatched.
+- `DELETION_WORKER_SECRET` is an optional second bearer secret for deliberate manual runs.
 - Composite Firestore indexes for `deletionRequests` (`status` + `scheduledEraseAfter`)
   may be required by the deletion worker query.
