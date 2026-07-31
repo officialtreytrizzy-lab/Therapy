@@ -569,6 +569,7 @@ export default async function handler(req, res) {
   return runWithGoogle(req, async () => {
     try {
       const token = await requireUser(req);
+      res.__verifiedFirebaseToken = token;
       // App Check is enforced only when the production feature flag is enabled.
       await verifyAppCheck(req, FEATURE_FLAGS.enforceAppCheck ? await getGoogleAccessToken().catch(() => null) : null);
       const action = clean(req.body?.action, 80);

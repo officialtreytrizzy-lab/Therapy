@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { FieldValue, Timestamp } from '@google-cloud/firestore';
 
+const EXTERNAL_FETCH_TIMEOUT_MS = Math.max(1_000, Math.min(120_000, Number(process.env.EXTERNAL_FETCH_TIMEOUT_MS) || 30_000));
+
 export const FEATURE_FLAGS = Object.freeze({
   launchHardening: process.env.FEATURE_PUBLIC_BETA_HARDENING !== 'false',
   enforceAppCheck: process.env.NODE_ENV === 'production' && process.env.FIREBASE_APPCHECK_ENFORCE === 'true',
@@ -29,11 +31,18 @@ export async function verifyAppCheck(req, googleAccessToken) {
     error.status = 401; error.code = 'app-check-required'; throw error;
   }
   const projectId = process.env.FIREBASE_PROJECT_ID;
-  const response = await fetch(`https://firebaseappcheck.googleapis.com/v1/projects/${projectId}:verifyAppCheckToken`, {
-    method: 'POST',
-    headers: { authorization: `Bearer ${googleAccessToken}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ appCheckToken: token }),
-  });
+  let response;
+  try {
+    response = await fetch(`https://firebaseappcheck.googleapis.com/v1/projects/${projectId}:verifyAppCheckToken`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${googleAccessToken}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ appCheckToken: token }),
+      signal: AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS),
+    });
+  } catch {
+    const error = new Error('App Check verification is temporarily unavailable.');
+    error.status = 503; error.code = 'app-check-unavailable'; throw error;
+  }
   if (!response.ok) {
     const error = new Error('App Check verification failed.');
     error.status = 401; error.code = 'app-check-failed'; throw error;

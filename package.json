@@ -16,5 +16,8 @@
   "engines": {
     "node": "22.x"
   },
-  "type": "module"
+  "type": "module",
+  "overrides": {
+    "brace-expansion": "5.0.9"
+  }
 }

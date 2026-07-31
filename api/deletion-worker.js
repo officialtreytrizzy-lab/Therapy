@@ -1,13 +1,18 @@
+import { timingSafeEqual } from 'node:crypto';
 import { processScheduledDeletions } from './firebase-account.js';
 import { createFirestoreForRequest } from './account-postprocess.js';
 import { redactedLog } from './security.js';
 
-function authorized(req) {
-  if (req.headers['x-vercel-cron']) return true;
-  const secret = process.env.DELETION_WORKER_SECRET;
-  if (!secret) return false;
+function secureMatch(provided, expected) {
+  const left = Buffer.from(String(provided || ''));
+  const right = Buffer.from(String(expected || ''));
+  return left.length > 0 && left.length === right.length && timingSafeEqual(left, right);
+}
+
+export function authorized(req) {
   const provided = String(req.headers.authorization || '').replace(/^Bearer\s+/i, '');
-  return provided === secret;
+  const acceptedSecrets = [process.env.CRON_SECRET, process.env.DELETION_WORKER_SECRET].filter(Boolean);
+  return acceptedSecrets.some(secret => secureMatch(provided, secret));
 }
 
 async function captureCandidateCouples(req, limit) {

@@ -6,7 +6,7 @@
 // assets in public/ that nothing references (dead assets).
 import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { extname, join, relative, sep } from 'node:path';
 
 const root = process.cwd();
 const errors = [];
@@ -55,7 +55,7 @@ if (!existsSync(indexPath)) {
 
   // 3. Warn about unreferenced local JS/CSS assets (dead assets).
   const shipped = walk(publicDir)
-    .map(f => f.replace(publicDir + '/', ''))
+    .map(f => relative(publicDir, f).split(sep).join('/'))
     .filter(f => ['.js', '.css'].includes(extname(f)));
   const entryChain = new Set(['app1.js', 'app2.js', 'app3.js', 'app4.js', 'firebase-client.js', 'relationship-v2.js']);
   for (const asset of shipped) {
