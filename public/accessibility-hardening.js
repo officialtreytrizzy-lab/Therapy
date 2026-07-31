@@ -67,6 +67,12 @@
 
   function harden(root) {
     const scope = root?.querySelectorAll ? root : document;
+    if (root instanceof Element) {
+      if (root.matches('button,a[href]')) ensureName(root);
+      if (root.matches('input,textarea,select')) ensureFieldLabel(root);
+      if (root.matches('.modal,.fb2-back,[role="dialog"]')) ensureDialog(root);
+      if (root.matches('img:not([alt])')) root.setAttribute('alt', '');
+    }
     scope.querySelectorAll('button,a[href]').forEach(ensureName);
     scope.querySelectorAll('input,textarea,select').forEach(ensureFieldLabel);
     scope.querySelectorAll('.modal,.fb2-back,[role="dialog"]').forEach(ensureDialog);
@@ -94,17 +100,23 @@
   }
 
   function bootstrap() {
+    const app = document.getElementById('app');
+    if (app) {
+      app.setAttribute('tabindex', '-1');
+      app.setAttribute('aria-label', app.getAttribute('aria-label') || 'US, FOR REAL application');
+    }
     if (!document.querySelector('.usfr-skip-link')) {
       const skip = document.createElement('a');
       skip.className = 'usfr-skip-link';
       skip.href = '#app';
       skip.textContent = 'Skip to main content';
+      skip.addEventListener('click', event => {
+        event.preventDefault();
+        const target = document.getElementById('app');
+        target?.focus({ preventScroll: false });
+        history.replaceState(history.state, '', `${location.pathname}${location.search}#app`);
+      });
       document.body.prepend(skip);
-    }
-    const app = document.getElementById('app');
-    if (app) {
-      app.setAttribute('tabindex', '-1');
-      app.setAttribute('aria-label', app.getAttribute('aria-label') || 'US, FOR REAL application');
     }
     if (!document.getElementById('usfr-route-status')) {
       const live = document.createElement('div');
