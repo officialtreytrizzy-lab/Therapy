@@ -21,6 +21,10 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
 
       - name: Install production dependencies exactly
         run: npm ci
