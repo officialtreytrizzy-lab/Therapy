@@ -8,13 +8,17 @@ const index = read('../public/index.html');
 const security = read('../api/security.js');
 const firebaseConfig = read('../api/firebase-config.js');
 const health = read('../api/healthz.js');
-const consentApi = read('../api/consent.js');
+const accountRoute = read('../api/firebase-account-route.js');
 const consentGate = read('../public/consent-gate.js');
 const workflow = read('../.github/workflows/public-beta.yml');
 const packageJson = JSON.parse(read('../package.json'));
 
 function header(name) {
   return vercel.headers?.flatMap(entry => entry.headers || []).find(item => item.key === name)?.value || '';
+}
+
+function rewrite(source) {
+  return vercel.rewrites?.find(item => item.source === source)?.destination || '';
 }
 
 test('CSP blocks inline script elements and reports the remaining legacy attribute debt', () => {
@@ -24,6 +28,8 @@ test('CSP blocks inline script elements and reports the remaining legacy attribu
   assert.match(reporting, /script-src-attr 'none'/);
   assert.match(reporting, /style-src-attr 'none'/);
   assert.match(reporting, /report-uri \/api\/csp-report/);
+  assert.equal(rewrite('/api/csp-report'), '/api/healthz.js');
+  assert.match(health, /csp-violation/);
 });
 
 test('the app exposes accessibility, consent, and legal safeguards from the root entrypoint', () => {
@@ -35,13 +41,14 @@ test('the app exposes accessibility, consent, and legal safeguards from the root
   assert.match(index, /consent-gate\.js/);
 });
 
-test('versioned adult and wellness-policy consent is recorded server-side', () => {
-  assert.match(consentApi, /POLICY_VERSION = '2026-07-31\.1'/);
-  assert.match(consentApi, /policyConsentAcceptedAt/);
-  assert.match(consentApi, /adultEligibilityConfirmedAt/);
-  assert.match(consentApi, /verifyAppCheck/);
+test('versioned adult and wellness-policy consent is recorded through the account function', () => {
+  assert.match(accountRoute, /POLICY_VERSION = '2026-07-31\.1'/);
+  assert.match(accountRoute, /policyConsentAcceptedAt/);
+  assert.match(accountRoute, /adultEligibilityConfirmedAt/);
+  assert.match(accountRoute, /enforceRateLimit/);
   assert.match(consentGate, /Decline and sign out/);
-  assert.match(consentGate, /\/api\/consent/);
+  assert.match(consentGate, /action: 'saveConsentControls'/);
+  assert.equal(rewrite('/api/consent'), '/api/firebase-account-route.js');
 });
 
 test('App Check readiness distinguishes enforcement from missing client configuration', () => {
