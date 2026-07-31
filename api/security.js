@@ -2,11 +2,16 @@ import { randomUUID } from 'node:crypto';
 import { FieldValue, Timestamp } from '@google-cloud/firestore';
 
 const EXTERNAL_FETCH_TIMEOUT_MS = Math.max(1_000, Math.min(120_000, Number(process.env.EXTERNAL_FETCH_TIMEOUT_MS) || 30_000));
+const production = process.env.NODE_ENV === 'production';
+const appCheckRequested = production && process.env.FIREBASE_APPCHECK_ENFORCE === 'true';
+const appCheckClientConfigured = Boolean(process.env.FIREBASE_APP_CHECK_SITE_KEY);
 
 export const FEATURE_FLAGS = Object.freeze({
   launchHardening: process.env.FEATURE_PUBLIC_BETA_HARDENING !== 'false',
-  enforceAppCheck: process.env.NODE_ENV === 'production' && process.env.FIREBASE_APPCHECK_ENFORCE === 'true',
-  devBypass: process.env.FIREBASE_APPCHECK_DEBUG_BYPASS === 'true' || process.env.NODE_ENV !== 'production',
+  enforceAppCheck: appCheckRequested && appCheckClientConfigured,
+  appCheckMisconfigured: appCheckRequested && !appCheckClientConfigured,
+  appCheckClientConfigured,
+  devBypass: process.env.FIREBASE_APPCHECK_DEBUG_BYPASS === 'true' || !production,
 });
 
 export function correlationId(req) {
@@ -24,6 +29,10 @@ export function redactedLog(level, message, fields = {}) {
 }
 
 export async function verifyAppCheck(req, googleAccessToken) {
+  if (FEATURE_FLAGS.appCheckMisconfigured) {
+    const error = new Error('App Check enforcement is enabled but the client site key is missing.');
+    error.status = 503; error.code = 'app-check-misconfigured'; throw error;
+  }
   if (!FEATURE_FLAGS.enforceAppCheck) return { enforced: false, bypass: FEATURE_FLAGS.devBypass };
   const token = String(req.headers['x-firebase-appcheck'] || '');
   if (!token) {
@@ -31,6 +40,10 @@ export async function verifyAppCheck(req, googleAccessToken) {
     error.status = 401; error.code = 'app-check-required'; throw error;
   }
   const projectId = process.env.FIREBASE_PROJECT_ID;
+  if (!projectId) {
+    const error = new Error('App Check project configuration is unavailable.');
+    error.status = 503; error.code = 'app-check-misconfigured'; throw error;
+  }
   let response;
   try {
     response = await fetch(`https://firebaseappcheck.googleapis.com/v1/projects/${projectId}:verifyAppCheckToken`, {
