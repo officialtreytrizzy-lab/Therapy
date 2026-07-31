@@ -58,6 +58,7 @@ test('App Check readiness distinguishes enforcement from missing client configur
 });
 
 test('CI includes unit, Firestore-rule, browser, accessibility, and dependency gates', () => {
+  assert.match(workflow, /node-version: 24/);
   assert.match(workflow, /test:rules/);
   assert.match(workflow, /playwright install/);
   assert.match(workflow, /test:e2e/);
@@ -65,7 +66,7 @@ test('CI includes unit, Firestore-rule, browser, accessibility, and dependency g
   assert.equal(packageJson.scripts['test:unit'], 'node --test tests/*.test.mjs');
 });
 
-test('Node 22 remains the declared deployment runtime', () => {
-  assert.equal(packageJson.engines.node, '22.x');
-  assert.equal(read('../.nvmrc').trim(), '22');
+test('Node 24 is aligned across repository and deployment settings', () => {
+  assert.equal(packageJson.engines.node, '24.x');
+  assert.equal(read('../.nvmrc').trim(), '24');
 });
