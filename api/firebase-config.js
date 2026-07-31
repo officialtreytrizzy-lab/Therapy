@@ -1,4 +1,6 @@
 export default function handler(req, res) {
+  const production = process.env.NODE_ENV === 'production';
+  const appCheckRequested = production && process.env.FIREBASE_APPCHECK_ENFORCE === 'true';
   const config = {
     apiKey: process.env.FIREBASE_API_KEY || '',
     authDomain: process.env.FIREBASE_AUTH_DOMAIN || '',
@@ -11,6 +13,15 @@ export default function handler(req, res) {
     appCheckSiteKey: process.env.FIREBASE_APP_CHECK_SITE_KEY || '',
   };
   const configured = Boolean(config.apiKey && config.authDomain && config.projectId && config.appId);
+  const appCheckReady = !production || (appCheckRequested && Boolean(config.appCheckSiteKey));
   res.setHeader('Cache-Control', 'public, max-age=0, s-maxage=300, stale-while-revalidate=3600');
-  res.status(200).json({ configured, config: configured ? config : null });
+  res.status(200).json({
+    configured,
+    appCheckReady,
+    security: {
+      appCheckRequested,
+      appCheckClientConfigured: Boolean(config.appCheckSiteKey),
+    },
+    config: configured ? config : null,
+  });
 }

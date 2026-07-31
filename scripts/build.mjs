@@ -2,8 +2,8 @@
 // Real build/verification step for the static Firebase-enabled app.
 // It does not bundle (the app ships as plain static files) but it DOES validate
 // that the browser can actually load everything: syntax-checks every JS file,
-// confirms every local asset referenced by index.html exists, and flags local
-// assets in public/ that nothing references (dead assets).
+// confirms every local asset referenced by index.html exists, flags local assets
+// in public/ that nothing references, and enforces the frontend security policy.
 import { execFileSync } from 'node:child_process';
 import { readFileSync, readdirSync, existsSync, statSync } from 'node:fs';
 import { extname, join, relative, sep } from 'node:path';
@@ -22,7 +22,7 @@ function walk(dir) {
   return out;
 }
 
-// 1. Syntax-check every JS/MJS file under api/ and public/ and scripts/.
+// 1. Syntax-check every JS/MJS file under api/, public/, scripts/, and tests/.
 const jsFiles = ['api', 'public', 'scripts', 'tests']
   .filter(d => existsSync(join(root, d)))
   .flatMap(d => walk(join(root, d)))
@@ -65,15 +65,22 @@ if (!existsSync(indexPath)) {
   }
 }
 
+// 4. No new inline execution/style debt or dynamic-code primitives.
+try {
+  execFileSync(process.execPath, [join(root, 'scripts', 'frontend-policy.mjs')], { stdio: 'inherit' });
+} catch (error) {
+  errors.push(`Frontend policy failed with exit code ${error.status ?? 'unknown'}.`);
+}
+
 if (warnings.length) {
   console.warn('Build warnings:');
-  for (const w of warnings) console.warn('  - ' + w);
+  for (const warning of warnings) console.warn('  - ' + warning);
 }
 
 if (errors.length) {
   console.error('Build failed:');
-  for (const e of errors) console.error('  - ' + e);
+  for (const error of errors) console.error('  - ' + error);
   process.exit(1);
 }
 
-console.log(`Build OK: ${jsFiles.length} JS files checked, index.html asset references validated.`);
+console.log(`Build OK: ${jsFiles.length} JS files checked, index.html asset references validated, frontend policy enforced.`);

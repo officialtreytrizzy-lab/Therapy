@@ -124,7 +124,7 @@ async function accessToken() {
 export async function getGoogleAccessToken() {
   return accessToken();
 }
-function parseJson(text) {
+export function parseGuideJson(text) {
   const raw = String(text || '').trim();
   const candidates = [raw, raw.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/i, '').trim()];
   const objectStart = raw.indexOf('{');
@@ -138,7 +138,7 @@ function parseJson(text) {
   }
   throw httpError(502, 'The Guide returned an invalid structured response.', 'invalid-guide-response');
 }
-async function generateVertexJson(token, url, system, prompt, maxOutputTokens, temperature = 0.35) {
+export async function generateVertexJson(token, url, system, prompt, maxOutputTokens, temperature = 0.35) {
   let response;
   try {
     response = await fetch(url, {
@@ -167,7 +167,7 @@ export async function gemini(system, prompt, maxOutputTokens = 1800) {
   const url = `https://aiplatform.googleapis.com/v1/projects/${VERTEX_PROJECT_ID}/locations/${LOCATION}/publishers/google/models/${MODEL}:generateContent`;
   const primary = await generateVertexJson(token, url, system, prompt, maxOutputTokens);
   try {
-    return parseJson(primary.text);
+    return parseGuideJson(primary.text);
   } catch (error) {
     if (error.code !== 'invalid-guide-response' || !primary.text.trim()) throw error;
     const repaired = await generateVertexJson(
@@ -179,7 +179,7 @@ export async function gemini(system, prompt, maxOutputTokens = 1800) {
       0.05,
     );
     try {
-      return parseJson(repaired.text);
+      return parseGuideJson(repaired.text);
     } catch {
       console.error('Guide structured-output repair failed:', { primaryFinishReason: primary.finishReason, repairFinishReason: repaired.finishReason, primaryLength: primary.text.length, repairLength: repaired.text.length });
       throw httpError(502, 'The Guide returned an invalid structured response.', 'invalid-guide-response');
