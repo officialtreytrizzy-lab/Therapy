@@ -77,7 +77,8 @@ test('the consolidated health function accepts bounded CSP reports', async () =>
   const res = mockRes();
   await healthz({
     method: 'POST',
-    url: '/api/csp-report',
+    url: '/api/healthz?cspReport=1',
+    query: { cspReport: '1' },
     headers: { 'content-length': '140', 'content-type': 'application/csp-report' },
     body: {
       'csp-report': {
@@ -91,14 +92,14 @@ test('the consolidated health function accepts bounded CSP reports', async () =>
   assert.equal(res.ended, true);
 });
 
-test('CSP and health routes reject the wrong HTTP method', async () => {
+test('CSP and health modes reject the wrong HTTP method', async () => {
   const csp = mockRes();
-  await healthz({ method: 'GET', url: '/api/csp-report', headers: {}, query: {} }, csp);
+  await healthz({ method: 'GET', url: '/api/healthz?cspReport=1', query: { cspReport: '1' }, headers: {} }, csp);
   assert.equal(csp.statusCode, 405);
   assert.equal(csp.headers.allow, 'POST');
 
   const health = mockRes();
-  await healthz({ method: 'POST', url: '/api/healthz', headers: { 'content-type': 'application/json' }, body: {} }, health);
+  await healthz({ method: 'POST', url: '/api/healthz', query: {}, headers: { 'content-type': 'application/json' }, body: {} }, health);
   assert.equal(health.statusCode, 405);
   assert.equal(health.headers.allow, 'GET');
 });
