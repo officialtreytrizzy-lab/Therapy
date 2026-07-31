@@ -3,6 +3,19 @@
 
   const POLICY_VERSION = '2026-07-31.1';
   const FIREBASE_VERSION = '12.16.0';
+  const FOCUSABLE_SELECTOR = [
+    'a[href]',
+    'button:not([disabled])',
+    'input:not([disabled])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(',');
+  const blockedElements = new Set();
+  let backgroundObserver = null;
+  let focusListener = null;
+  let keyListener = null;
+  let previouslyFocused = null;
   let saving = false;
 
   function storageKey(uid) {
@@ -30,16 +43,103 @@
     return node;
   }
 
-  function setBlocked(blocked) {
-    const app = document.getElementById('app');
-    if (!app) return;
-    if (blocked) app.setAttribute('inert', '');
-    else app.removeAttribute('inert');
+  function shouldBlock(element, gate) {
+    return element !== gate && !['SCRIPT', 'NOSCRIPT'].includes(element.tagName);
   }
 
-  function removeGate() {
-    document.getElementById('usfr-consent-gate')?.remove();
-    setBlocked(false);
+  function blockElement(element) {
+    if (element.hasAttribute('inert')) return;
+    element.setAttribute('inert', '');
+    blockedElements.add(element);
+  }
+
+  function blockBackground(gate) {
+    document.body.classList.add('consent-open');
+    [...document.body.children]
+      .filter(element => shouldBlock(element, gate))
+      .forEach(blockElement);
+
+    backgroundObserver?.disconnect();
+    backgroundObserver = new MutationObserver(records => {
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (node instanceof HTMLElement && shouldBlock(node, gate)) blockElement(node);
+        }
+      }
+    });
+    backgroundObserver.observe(document.body, { childList: true });
+  }
+
+  function releaseBackground() {
+    backgroundObserver?.disconnect();
+    backgroundObserver = null;
+    for (const element of blockedElements) {
+      if (element.isConnected) element.removeAttribute('inert');
+    }
+    blockedElements.clear();
+    document.body.classList.remove('consent-open');
+  }
+
+  function focusableElements(dialog) {
+    return [...dialog.querySelectorAll(FOCUSABLE_SELECTOR)].filter(element => {
+      if (!(element instanceof HTMLElement)) return false;
+      if (element.hidden || element.closest('[hidden],[inert]')) return false;
+      return element.getClientRects().length > 0;
+    });
+  }
+
+  function containFocus(gate, dialog) {
+    stopFocusContainment();
+    keyListener = event => {
+      if (event.key !== 'Tab') return;
+      const focusable = focusableElements(dialog);
+      if (!focusable.length) {
+        event.preventDefault();
+        dialog.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (event.shiftKey && (active === first || !dialog.contains(active))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (active === last || !dialog.contains(active))) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    focusListener = event => {
+      if (gate.contains(event.target)) return;
+      const target = focusableElements(dialog)[0] || dialog;
+      target.focus();
+    };
+    document.addEventListener('keydown', keyListener, true);
+    document.addEventListener('focusin', focusListener, true);
+  }
+
+  function stopFocusContainment() {
+    if (keyListener) document.removeEventListener('keydown', keyListener, true);
+    if (focusListener) document.removeEventListener('focusin', focusListener, true);
+    keyListener = null;
+    focusListener = null;
+  }
+
+  function removeGate(options = {}) {
+    const gate = document.getElementById('usfr-consent-gate');
+    if (!gate) return;
+    stopFocusContainment();
+    releaseBackground();
+    gate.remove();
+
+    const restoreFocus = options.restoreFocus !== false;
+    const target = restoreFocus && previouslyFocused?.isConnected
+      ? previouslyFocused
+      : document.getElementById('app');
+    previouslyFocused = null;
+    if (target instanceof HTMLElement && !target.hasAttribute('inert')) {
+      requestAnimationFrame(() => target.focus({ preventScroll: false }));
+    }
   }
 
   async function appCheckToken() {
@@ -108,16 +208,18 @@
         await auth.signOut(user.auth);
       }
     } catch {}
-    removeGate();
+    removeGate({ restoreFocus: false });
     if (typeof window.navigate === 'function') window.navigate('/');
     else location.assign('/');
   }
 
   function mountGate() {
     if (document.getElementById('usfr-consent-gate')) return;
-    setBlocked(true);
+    previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+
     const backdrop = element('div', { className: 'consent-gate', id: 'usfr-consent-gate' });
     const dialog = element('section', { className: 'consent-dialog' });
+    dialog.tabIndex = -1;
     dialog.setAttribute('role', 'dialog');
     dialog.setAttribute('aria-modal', 'true');
     dialog.setAttribute('aria-labelledby', 'consent-title');
@@ -166,6 +268,8 @@
     dialog.append(eyebrow, title, summary, links, label, status, actions);
     backdrop.append(dialog);
     document.body.append(backdrop);
+    blockBackground(backdrop);
+    containFocus(backdrop, dialog);
     requestAnimationFrame(() => checkbox.focus());
   }
 

@@ -71,3 +71,56 @@ test('legal and wellness notices are reachable and accessible', async ({ page })
     expect(severeViolations(results), `${path}\n${JSON.stringify(severeViolations(results), null, 2)}`).toEqual([]);
   }
 });
+
+test('policy consent modal inerts all background content and traps keyboard focus', async ({ page }) => {
+  await page.goto('/');
+  await page.evaluate(() => {
+    window.USFRFirebase = {
+      getState: () => ({ ready: true, user: { uid: 'consent-test-user' } }),
+      open: () => {},
+      call: async () => ({}),
+      guideCall: async () => ({}),
+    };
+    window.dispatchEvent(new CustomEvent('usfr-firebase-ready'));
+  });
+
+  const gate = page.locator('#usfr-consent-gate');
+  const dialog = gate.getByRole('dialog');
+  await expect(gate).toBeVisible();
+  await expect(dialog).toBeVisible();
+  await expect(page.locator('body')).toHaveClass(/consent-open/);
+
+  await page.evaluate(() => {
+    const button = document.createElement('button');
+    button.id = 'late-background-control';
+    button.textContent = 'Background control';
+    document.body.append(button);
+  });
+
+  const unblockedBackground = await page.locator('body > :not(#usfr-consent-gate):not(script):not(noscript)').evaluateAll(elements => (
+    elements.filter(element => !element.hasAttribute('inert')).map(element => element.id || element.tagName)
+  ));
+  expect(unblockedBackground).toEqual([]);
+
+  const first = dialog.getByRole('link', { name: 'Privacy notice' });
+  const last = dialog.getByRole('button', { name: 'Accept and enter my space' });
+  await first.focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(last).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(first).toBeFocused();
+
+  await page.evaluate(() => document.getElementById('late-background-control')?.focus());
+  expect(await page.evaluate(() => document.getElementById('usfr-consent-gate')?.contains(document.activeElement))).toBe(true);
+
+  const results = await new AxeBuilder({ page }).include('#usfr-consent-gate').withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(severeViolations(results), JSON.stringify(severeViolations(results), null, 2)).toEqual([]);
+
+  await page.evaluate(() => {
+    localStorage.setItem('usfr-policy-consent:consent-test-user', '2026-07-31.1');
+    window.dispatchEvent(new CustomEvent('usfr-policy-consent'));
+  });
+  await expect(gate).toHaveCount(0);
+  await expect(page.locator('body')).not.toHaveClass(/consent-open/);
+  await expect(page.locator('#late-background-control')).not.toHaveAttribute('inert', '');
+});
