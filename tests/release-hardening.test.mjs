@@ -28,8 +28,11 @@ test('CSP blocks inline script elements and reports the remaining legacy attribu
   assert.match(reporting, /script-src-attr 'none'/);
   assert.match(reporting, /style-src-attr 'none'/);
   assert.match(reporting, /report-uri \/api\/csp-report/);
+  assert.match(reporting, /report-to csp-endpoint/);
+  assert.equal(header('Reporting-Endpoints'), 'csp-endpoint="/api/csp-report"');
   assert.equal(rewrite('/api/csp-report'), '/api/healthz.js');
   assert.match(health, /csp-violation/);
+  assert.match(health, /application\/reports\+json/);
 });
 
 test('the app exposes accessibility, consent, and legal safeguards from the root entrypoint', () => {
@@ -57,7 +60,10 @@ test('App Check readiness distinguishes enforcement from missing client configur
   assert.match(health, /appCheckReady/);
 });
 
-test('CI includes unit, Firestore-rule, browser, accessibility, and dependency gates', () => {
+test('CI includes unit, Firestore-rule, browser, accessibility, dependency, and modern action gates', () => {
+  assert.match(workflow, /actions\/checkout@v6/);
+  assert.match(workflow, /actions\/setup-node@v6/);
+  assert.match(workflow, /actions\/upload-artifact@v6/);
   assert.match(workflow, /node-version: 24/);
   assert.match(workflow, /test:rules/);
   assert.match(workflow, /playwright install/);
