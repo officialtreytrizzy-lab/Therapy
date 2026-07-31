@@ -35,6 +35,7 @@ function isCspReportRoute(req) {
   const path = String(req.url || req.originalUrl || '').split('?')[0];
   const contentType = String(req.headers?.['content-type'] || '').toLowerCase();
   return path === '/api/csp-report'
+    || String(req.query?.cspReport || '') === '1'
     || contentType.startsWith('application/csp-report')
     || contentType.startsWith('application/reports+json');
 }
