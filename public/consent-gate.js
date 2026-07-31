@@ -77,7 +77,15 @@
       const response = await fetch('/api/consent', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ version: POLICY_VERSION, ageConfirmed: true, accepted: true }),
+        body: JSON.stringify({
+          action: 'saveConsentControls',
+          data: {
+            acceptCurrentPolicies: true,
+            policyVersion: POLICY_VERSION,
+            ageConfirmed: true,
+            accepted: true,
+          },
+        }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload?.error?.message || 'Consent could not be saved.');
