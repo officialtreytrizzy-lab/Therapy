@@ -74,7 +74,7 @@
       const headers = { 'content-type': 'application/json', authorization: `Bearer ${token}` };
       const appCheck = await appCheckToken();
       if (appCheck) headers['x-firebase-appcheck'] = appCheck;
-      const response = await fetch('/api/consent', {
+      const response = await fetch('/api/firebase-account', {
         method: 'POST',
         headers,
         body: JSON.stringify({
