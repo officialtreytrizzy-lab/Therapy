@@ -41,7 +41,7 @@ jobs:
       # Browser and emulator tooling is CI-only so production deploys keep the
       # small locked dependency tree. package-lock.json is not modified.
       - name: Install isolated release-test tooling
-        run: npm install --no-save --package-lock=false @firebase/rules-unit-testing firebase firebase-tools @playwright/test @axe-core/playwright serve
+        run: npm install --no-save --package-lock=false @firebase/rules-unit-testing firebase firebase-tools @playwright/test @axe-core/playwright
 
       - name: Firestore security-rule tests
         run: npm run test:rules
