@@ -31,13 +31,22 @@ function parseReportBody(req) {
   try { return JSON.parse(raw); } catch { return {}; }
 }
 
+function isCspReportRoute(req) {
+  const path = String(req.url || req.originalUrl || '').split('?')[0];
+  const contentType = String(req.headers?.['content-type'] || '').toLowerCase();
+  return path === '/api/csp-report'
+    || contentType.startsWith('application/csp-report')
+    || contentType.startsWith('application/reports+json');
+}
+
 function handleCspReport(req, res) {
   const contentLength = Number(req.headers['content-length'] || 0);
   if (contentLength > MAX_REPORT_BYTES) {
     return res.status(413).json({ error: { code: 'report-too-large', message: 'The report is too large.' } });
   }
-  const body = parseReportBody(req);
-  const report = body['csp-report'] || body.body || body;
+  const parsed = parseReportBody(req);
+  const envelope = Array.isArray(parsed) ? parsed[0] || {} : parsed;
+  const report = envelope['csp-report'] || envelope.body || envelope;
   console.warn(JSON.stringify({
     message: 'csp-violation',
     disposition: text(report.disposition, 32),
@@ -90,10 +99,17 @@ async function deepChecks(req) {
 
 export default async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
-  if (req.method === 'POST') return handleCspReport(req, res);
+  const cspRoute = isCspReportRoute(req);
+  if (cspRoute) {
+    if (req.method !== 'POST') {
+      res.setHeader('Allow', 'POST');
+      return res.status(405).json({ error: { code: 'method-not-allowed', message: 'POST is required.' } });
+    }
+    return handleCspReport(req, res);
+  }
   if (req.method !== 'GET') {
-    res.setHeader('Allow', 'GET, POST');
-    return res.status(405).json({ error: { code: 'method-not-allowed', message: 'GET or POST is required.' } });
+    res.setHeader('Allow', 'GET');
+    return res.status(405).json({ error: { code: 'method-not-allowed', message: 'GET is required.' } });
   }
 
   const readiness = configReadiness();
