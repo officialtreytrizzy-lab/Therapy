@@ -21,16 +21,16 @@ function rewrite(source) {
   return vercel.rewrites?.find(item => item.source === source)?.destination || '';
 }
 
-test('CSP blocks inline script elements and reports the remaining legacy attribute debt', () => {
+test('CSP blocks inline script elements and reports legacy debt through the deployed health route', () => {
   const enforced = header('Content-Security-Policy');
   const reporting = header('Content-Security-Policy-Report-Only');
   assert.match(enforced, /script-src-elem 'self'/);
   assert.match(reporting, /script-src-attr 'none'/);
   assert.match(reporting, /style-src-attr 'none'/);
-  assert.match(reporting, /report-uri \/api\/csp-report/);
+  assert.match(reporting, /report-uri \/api\/healthz\?cspReport=1/);
   assert.match(reporting, /report-to csp-endpoint/);
-  assert.equal(header('Reporting-Endpoints'), 'csp-endpoint="/api/csp-report"');
-  assert.equal(rewrite('/api/csp-report'), '/api/healthz.js');
+  assert.equal(header('Reporting-Endpoints'), 'csp-endpoint="/api/healthz?cspReport=1"');
+  assert.equal(rewrite('/api/healthz'), '/api/healthz.js');
   assert.match(health, /csp-violation/);
   assert.match(health, /application\/reports\+json/);
 });
@@ -44,14 +44,15 @@ test('the app exposes accessibility, consent, and legal safeguards from the root
   assert.match(index, /consent-gate\.js/);
 });
 
-test('versioned adult and wellness-policy consent is recorded through the account function', () => {
+test('versioned adult and wellness-policy consent is recorded through the deployed account function', () => {
   assert.match(accountRoute, /POLICY_VERSION = '2026-07-31\.1'/);
   assert.match(accountRoute, /policyConsentAcceptedAt/);
   assert.match(accountRoute, /adultEligibilityConfirmedAt/);
   assert.match(accountRoute, /enforceRateLimit/);
   assert.match(consentGate, /Decline and sign out/);
   assert.match(consentGate, /action: 'saveConsentControls'/);
-  assert.equal(rewrite('/api/consent'), '/api/firebase-account-route.js');
+  assert.match(consentGate, /fetch\('\/api\/firebase-account'/);
+  assert.equal(rewrite('/api/firebase-account'), '/api/firebase-account-route.js');
 });
 
 test('App Check readiness distinguishes enforcement from missing client configuration', () => {
