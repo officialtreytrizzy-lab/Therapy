@@ -5,6 +5,9 @@ import { audit, correlationId, enforceRateLimit, redactedLog, verifyAppCheck } f
 export const POLICY_VERSION = '2026-07-31.1';
 
 function body(req) {
+  if (Buffer.isBuffer(req.body)) {
+    try { return JSON.parse(req.body.toString('utf8')); } catch { return {}; }
+  }
   if (req.body && typeof req.body === 'object') return req.body;
   try { return JSON.parse(String(req.body || '{}')); } catch { return {}; }
 }
@@ -68,6 +71,8 @@ export default async function handler(req, res) {
         correlationId: requestId,
         visibility: 'metadata-only',
         metadata: { policyVersion: POLICY_VERSION, adultEligibilityConfirmed: true },
+      }).catch(error => {
+        redactedLog('error', 'consent-audit-write-failed', { requestId, code: error?.code || 'audit-failed' });
       });
 
       return res.status(200).json({ data: { accepted: true, version: POLICY_VERSION } });
