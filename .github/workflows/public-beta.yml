@@ -3,40 +3,58 @@ on:
   pull_request:
   push:
     branches: [main, public-beta-hardening]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: public-beta-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
-      # Real build: syntax-checks every JS file and validates that index.html asset
-      # references resolve (see scripts/build.mjs), then runs the behavioral tests.
-      - run: npm run build
-      - name: Run behavioral tests
-        id: tests
-        continue-on-error: true
-        shell: bash
-        run: |
-          set +e
-          npm test > test-output.txt 2>&1
-          code=$?
-          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
-          exit $code
-      - name: Upload behavioral test output
+
+      - name: Install production dependencies exactly
+        run: npm ci
+
+      - name: Build, syntax, assets, and frontend policy
+        run: npm run build
+
+      - name: Unit and regression tests
+        run: npm run test:unit
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+      # Browser and emulator tooling is CI-only so production deploys keep the
+      # small locked dependency tree. package-lock.json is not modified.
+      - name: Install isolated release-test tooling
+        run: npm install --no-save --package-lock=false @firebase/rules-unit-testing firebase firebase-tools @playwright/test @axe-core/playwright serve
+
+      - name: Firestore security-rule tests
+        run: npm run test:rules
+
+      - name: Install Chromium runtime
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser authentication and accessibility tests
+        run: npm run test:e2e
+
+      - name: Upload browser evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: behavioral-test-output
-          path: test-output.txt
-          retention-days: 1
-      - run: npm audit --omit=dev --audit-level=high
-        if: steps.tests.outcome == 'success'
-      - name: Fail when behavioral tests fail
-        if: steps.tests.outcome == 'failure'
-        run: |
-          cat test-output.txt
-          exit 1
+          name: browser-test-evidence
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore
+          retention-days: 7
