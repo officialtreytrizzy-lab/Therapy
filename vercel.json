@@ -21,12 +21,6 @@
     },
     "api/deletion-worker.js": {
       "maxDuration": 60
-    },
-    "api/consent.js": {
-      "maxDuration": 30
-    },
-    "api/csp-report.js": {
-      "maxDuration": 10
     }
   },
   "crons": [
@@ -113,11 +107,11 @@
     },
     {
       "source": "/api/consent",
-      "destination": "/api/consent.js"
+      "destination": "/api/firebase-account-route.js"
     },
     {
       "source": "/api/csp-report",
-      "destination": "/api/csp-report.js"
+      "destination": "/api/healthz.js"
     },
     {
       "source": "/(.*)",
